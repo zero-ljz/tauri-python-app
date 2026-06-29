@@ -3,7 +3,7 @@
 框架：
 Tauri v2
 前端：
-Vite + React + TypeScript + MobX + Radix Primitives + Tailwind
+Vite + React + TypeScript + MobX + Radix Primitives + Tailwind CSS v4
 Rust 层：
 SidecarManager + RpcClient + EventBridge
 后端与通信：
