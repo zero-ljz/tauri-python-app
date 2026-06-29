@@ -1,4 +1,4 @@
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use serde_json::{json, Value};
 use tauri::{AppHandle, State};
@@ -48,8 +48,7 @@ impl SidecarManager {
         let command = if let Ok(binary) = std::env::var("PYTHON_SIDECAR_BIN") {
             self.app.shell().command(binary)
         } else {
-            let python =
-                std::env::var("PYTHON_SIDECAR_PYTHON").unwrap_or_else(|_| "python".to_string());
+            let python = resolve_python_interpreter(&backend_dir)?;
             self.app
                 .shell()
                 .command(python)
@@ -102,6 +101,27 @@ impl SidecarManager {
 
         Ok(client)
     }
+}
+
+fn resolve_python_interpreter(backend_dir: &Path) -> Result<PathBuf, String> {
+    if let Ok(python) = std::env::var("PYTHON_SIDECAR_PYTHON") {
+        return Ok(PathBuf::from(python));
+    }
+
+    let venv_python = if cfg!(windows) {
+        backend_dir.join(".venv").join("Scripts").join("python.exe")
+    } else {
+        backend_dir.join(".venv").join("bin").join("python")
+    };
+
+    if venv_python.exists() {
+        return Ok(venv_python);
+    }
+
+    Err(format!(
+        "Python sidecar environment is missing at {}. Run `pnpm backend:setup`.",
+        venv_python.display()
+    ))
 }
 
 #[tauri::command]

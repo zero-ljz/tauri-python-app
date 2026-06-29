@@ -38,6 +38,7 @@ export class TaskRuntimeStore {
   lastError = "";
 
   private initialized = false;
+  private listenerGeneration = 0;
   private unlistenFns: UnlistenFn[] = [];
 
   constructor() {
@@ -58,26 +59,35 @@ export class TaskRuntimeStore {
       return;
     }
     this.initialized = true;
+    const generation = ++this.listenerGeneration;
     this.connection = "connecting";
 
-    const notificationUnlisten = await listen<RpcNotification>(
-      "sidecar://notification",
-      (event) => this.handleNotification(event.payload),
-    );
-    const logUnlisten = await listen<SidecarLogEvent>("sidecar://log", (event) =>
-      this.addLog(`${event.payload.stream}: ${event.payload.line}`),
-    );
-    const lifecycleUnlisten = await listen<SidecarLifecycleEvent>(
-      "sidecar://lifecycle",
-      (event) =>
+    const [notificationUnlisten, logUnlisten, lifecycleUnlisten] = await Promise.all([
+      listen<RpcNotification>("sidecar://notification", (event) =>
+        this.handleNotification(event.payload),
+      ),
+      listen<SidecarLogEvent>("sidecar://log", (event) =>
+        this.addLog(`${event.payload.stream}: ${event.payload.line}`),
+      ),
+      listen<SidecarLifecycleEvent>("sidecar://lifecycle", (event) =>
         this.addLog(`lifecycle:${event.payload.state} ${JSON.stringify(event.payload.detail)}`),
-    );
+      ),
+    ]);
+
+    if (generation !== this.listenerGeneration) {
+      notificationUnlisten();
+      logUnlisten();
+      lifecycleUnlisten();
+      return;
+    }
+
     this.unlistenFns = [notificationUnlisten, logUnlisten, lifecycleUnlisten];
 
     await this.refresh();
   }
 
   dispose() {
+    this.listenerGeneration += 1;
     for (const unlisten of this.unlistenFns) {
       unlisten();
     }
