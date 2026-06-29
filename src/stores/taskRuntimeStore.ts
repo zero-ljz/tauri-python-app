@@ -17,16 +17,6 @@ import type {
 
 type ConnectionState = "idle" | "connecting" | "ready" | "error";
 
-interface SidecarLogEvent {
-  stream: string;
-  line: string;
-}
-
-interface SidecarLifecycleEvent {
-  state: string;
-  detail: unknown;
-}
-
 export class TaskRuntimeStore {
   connection: ConnectionState = "idle";
   systemInfo: SystemInfoResult | null = null;
@@ -34,7 +24,6 @@ export class TaskRuntimeStore {
   runs = new Map<string, TaskStatusResult>();
   payloadDrafts = new Map<string, string>();
   busyTaskNames = new Set<string>();
-  logs: string[] = [];
   lastError = "";
 
   private initialized = false;
@@ -62,26 +51,16 @@ export class TaskRuntimeStore {
     const generation = ++this.listenerGeneration;
     this.connection = "connecting";
 
-    const [notificationUnlisten, logUnlisten, lifecycleUnlisten] = await Promise.all([
-      listen<RpcNotification>("sidecar://notification", (event) =>
-        this.handleNotification(event.payload),
-      ),
-      listen<SidecarLogEvent>("sidecar://log", (event) =>
-        this.addLog(`${event.payload.stream}: ${event.payload.line}`),
-      ),
-      listen<SidecarLifecycleEvent>("sidecar://lifecycle", (event) =>
-        this.addLog(`lifecycle:${event.payload.state} ${JSON.stringify(event.payload.detail)}`),
-      ),
-    ]);
+    const notificationUnlisten = await listen<RpcNotification>("sidecar://notification", (event) =>
+      this.handleNotification(event.payload),
+    );
 
     if (generation !== this.listenerGeneration) {
       notificationUnlisten();
-      logUnlisten();
-      lifecycleUnlisten();
       return;
     }
 
-    this.unlistenFns = [notificationUnlisten, logUnlisten, lifecycleUnlisten];
+    this.unlistenFns = [notificationUnlisten];
 
     await this.refresh();
   }
@@ -173,10 +152,6 @@ export class TaskRuntimeStore {
       return;
     }
     this.runs.set(notification.params.task_id, notification.params);
-  }
-
-  private addLog(line: string) {
-    this.logs = [line, ...this.logs].slice(0, 80);
   }
 }
 

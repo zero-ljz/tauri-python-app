@@ -7,10 +7,18 @@ use crate::protocol::JsonRpcNotification;
 pub const SIDECAR_NOTIFICATION_EVENT: &str = "sidecar://notification";
 pub const SIDECAR_LOG_EVENT: &str = "sidecar://log";
 pub const SIDECAR_LIFECYCLE_EVENT: &str = "sidecar://lifecycle";
+pub const SIDECAR_PACKET_EVENT: &str = "sidecar://packet";
 
 #[derive(Clone)]
 pub struct EventBridge {
     app: AppHandle,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SidecarPacketEvent {
+    pub direction: &'static str,
+    pub payload: Value,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -44,5 +52,11 @@ impl EventBridge {
         let _ = self
             .app
             .emit(SIDECAR_LIFECYCLE_EVENT, SidecarLifecycleEvent { state, detail });
+    }
+
+    pub fn emit_packet(&self, direction: &'static str, payload: Value) {
+        let _ = self
+            .app
+            .emit(SIDECAR_PACKET_EVENT, SidecarPacketEvent { direction, payload });
     }
 }

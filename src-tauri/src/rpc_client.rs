@@ -29,15 +29,17 @@ pub struct RpcClient {
     pending: Arc<Mutex<HashMap<u64, PendingSender>>>,
     next_id: Arc<AtomicU64>,
     alive: Arc<AtomicBool>,
+    bridge: EventBridge,
 }
 
 impl RpcClient {
-    pub fn new(child: CommandChild) -> Self {
+    pub fn new(child: CommandChild, bridge: EventBridge) -> Self {
         Self {
             child: Arc::new(Mutex::new(child)),
             pending: Arc::new(Mutex::new(HashMap::new())),
             next_id: Arc::new(AtomicU64::new(1)),
             alive: Arc::new(AtomicBool::new(true)),
+            bridge,
         }
     }
 
@@ -61,6 +63,9 @@ impl RpcClient {
             method,
             params,
         };
+        if let Ok(val) = serde_json::to_value(&request) {
+            self.bridge.emit_packet("outgoing", val);
+        }
         let mut line = serde_json::to_vec(&request).map_err(|error| error.to_string())?;
         line.push(b'\n');
 
@@ -100,6 +105,9 @@ impl RpcClient {
             method: method.to_string(),
             params,
         };
+        if let Ok(val) = serde_json::to_value(&notification) {
+            self.bridge.emit_packet("outgoing", val);
+        }
         let mut line = serde_json::to_vec(&notification).map_err(|error| error.to_string())?;
         line.push(b'\n');
         let mut child = self.child.lock().await;
@@ -111,10 +119,14 @@ impl RpcClient {
         }
     }
 
-    pub async fn handle_stdout_line(&self, line: Vec<u8>, bridge: &EventBridge) {
+    pub async fn handle_stdout_line(&self, line: Vec<u8>) {
         let line = String::from_utf8_lossy(&line).trim().to_string();
         if line.is_empty() {
             return;
+        }
+
+        if let Ok(val) = serde_json::from_str::<Value>(&line) {
+            self.bridge.emit_packet("incoming", val);
         }
 
         match parse_inbound(&line) {
@@ -125,23 +137,23 @@ impl RpcClient {
                         None => Ok(result.unwrap_or(Value::Null)),
                     });
                 } else {
-                    bridge.emit_lifecycle(
+                    self.bridge.emit_lifecycle(
                         "orphan-response",
                         json!({ "id": id, "line": line }),
                     );
                 }
             }
             Ok(InboundMessage::Notification(notification)) => {
-                bridge.emit_notification(notification);
+                self.bridge.emit_notification(notification);
             }
             Ok(InboundMessage::Request { id, method, params }) => {
-                bridge.emit_lifecycle(
+                self.bridge.emit_lifecycle(
                     "unhandled-request",
                     json!({ "id": id, "method": method, "params": params }),
                 );
             }
             Err(error) => {
-                bridge.emit_lifecycle("protocol-error", json!({ "error": error, "line": line }));
+                self.bridge.emit_lifecycle("protocol-error", json!({ "error": error, "line": line }));
             }
         }
     }

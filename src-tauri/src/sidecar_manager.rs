@@ -61,7 +61,7 @@ impl SidecarManager {
             .spawn()
             .map_err(|error| format!("failed to spawn Python sidecar: {error}"))?;
         let pid = child.pid();
-        let client = RpcClient::new(child);
+        let client = RpcClient::new(child, bridge.clone());
         let reader_client = client.clone();
         bridge.emit_lifecycle("started", json!({ "pid": pid }));
 
@@ -69,7 +69,7 @@ impl SidecarManager {
             while let Some(event) = rx.recv().await {
                 match event {
                     CommandEvent::Stdout(line) => {
-                        reader_client.handle_stdout_line(line, &bridge).await;
+                        reader_client.handle_stdout_line(line).await;
                     }
                     CommandEvent::Stderr(line) => {
                         bridge.emit_log(

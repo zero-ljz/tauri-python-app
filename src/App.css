@@ -269,28 +269,6 @@ textarea:focus {
   border-radius: 8px;
 }
 
-.log-panel {
-  margin-top: 14px;
-}
-
-.log-stream {
-  display: grid;
-  gap: 6px;
-  max-height: 220px;
-  overflow: auto;
-  padding: 14px;
-}
-
-.log-stream code {
-  overflow: hidden;
-  padding: 8px 10px;
-  border-radius: 8px;
-  color: #27313f;
-  background: var(--surface-subtle);
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
 .error-band {
   gap: 10px;
   margin-bottom: 14px;

@@ -18,6 +18,7 @@ import { Badge } from "./components/ui/badge";
 import { Button } from "./components/ui/button";
 import { Progress } from "./components/ui/progress";
 import { taskRuntimeStore } from "./stores/taskRuntimeStore";
+import { IpcMonitor } from "./components/IpcMonitor";
 import type { TaskDescriptor, TaskStatusResult } from "./generated/sidecarTypes";
 
 const App = observer(() => {
@@ -96,18 +97,8 @@ const App = observer(() => {
         </section>
       </section>
 
-      <section className="panel log-panel">
-        <div className="panel__header">
-          <h2>Sidecar Logs</h2>
-        </div>
-        <div className="log-stream">
-          {store.logs.length ? (
-            store.logs.map((line, index) => <code key={`${line}-${index}`}>{line}</code>)
-          ) : (
-            <span className="muted">No stderr or lifecycle events</span>
-          )}
-        </div>
-      </section>
+      {/* IPC Packet Monitor Panel */}
+      <IpcMonitor />
     </main>
   );
 });
