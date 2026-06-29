@@ -29,3 +29,7 @@ pydantic 作为 schema source of truth。
 从“函数调用”升级成“任务 runtime”。
 短操作使用 request/response。
 长任务使用 request/response 控制，使用 notification 推送状态。
+
+特性:
+无边框窗口(支持最小化, 最大化/还原, 关闭, 标题栏双击最大化/还原, 拖动标题栏移动窗口, 拖动窗口边缘调整窗口大小), 
+支持深浅色模式切换, 带有Web菜单栏, 首选项模态框, 可折叠侧边导航
