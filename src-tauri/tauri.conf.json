@@ -5,7 +5,7 @@
   "identifier": "com.zero-.tauri-python-app",
   "build": {
     "beforeDevCommand": "pnpm backend:setup && pnpm dev",
-    "devUrl": "http://localhost:1420",
+    "devUrl": "http://127.0.0.1:1420",
     "beforeBuildCommand": "pnpm backend:setup && pnpm build",
     "frontendDist": "../dist"
   },
