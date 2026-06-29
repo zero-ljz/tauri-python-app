@@ -6,7 +6,7 @@ from pydantic import BaseModel, ConfigDict, Field
 
 JsonValue = Any
 
-TaskKind = Literal["async_io", "blocking_io", "cpu_bound"]
+TaskKind = Literal["async_io", "blocking_io"]
 TaskState = Literal[
     "queued",
     "running",
@@ -45,7 +45,7 @@ class BlockingIoPayload(StrictModel):
 
 class CpuCountPayload(StrictModel):
     limit: int = Field(default=75000, ge=1000, le=2_000_000)
-    timeout_ms: int = Field(default=30000, ge=1000, le=600000)
+    timeout_ms: int = Field(default=60000, ge=1000, le=600000)
 
 
 class TaskDescriptor(StrictModel):

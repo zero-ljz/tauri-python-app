@@ -1,13 +1,12 @@
 from __future__ import annotations
 
 import asyncio
-import multiprocessing
 import os
 import platform
 import sys
 import time
 import uuid
-from concurrent.futures import Future, ProcessPoolExecutor, ThreadPoolExecutor
+from concurrent.futures import Future, ThreadPoolExecutor
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Any, Awaitable, Callable
@@ -140,8 +139,8 @@ TASK_DEFINITIONS: dict[str, TaskDefinition] = {
     "demo.cpu_count_primes": TaskDefinition(
         name="demo.cpu_count_primes",
         title="CPU-bound task",
-        kind="cpu_bound",
-        description="Runs in ProcessPoolExecutor for CPU-heavy work.",
+        kind="blocking_io",
+        description="Runs in ThreadPoolExecutor for CPU-heavy work.",
         payload_model=CpuCountPayload,
         handler=cpu_count_primes_task,
     ),
@@ -154,8 +153,6 @@ class TaskRuntime:
         self._tasks: dict[str, TaskHandle] = {}
         self._lock = asyncio.Lock()
         self._thread_pool = ThreadPoolExecutor(max_workers=4, thread_name_prefix="sidecar-io")
-        self._process_pool: ProcessPoolExecutor | None = None
-        self._process_context = multiprocessing.get_context("spawn")
 
     async def shutdown(self) -> None:
         async with self._lock:
@@ -168,8 +165,6 @@ class TaskRuntime:
             return_exceptions=True,
         )
         self._thread_pool.shutdown(wait=False, cancel_futures=True)
-        if self._process_pool is not None:
-            self._process_pool.shutdown(wait=False, cancel_futures=True)
 
     async def handle_request(self, method: str, params: Any | None) -> Any:
         if method == "system.ping":
@@ -246,14 +241,13 @@ class TaskRuntime:
         try:
             if handle.definition.kind == "async_io":
                 result = await self._run_async(handle, payload)
-            elif handle.definition.kind == "blocking_io":
-                result = await self._run_executor(handle, payload, self._thread_pool)
             else:
+                timeout_ms = payload.get("timeout_ms")
                 result = await self._run_executor(
                     handle,
                     payload,
-                    self._get_process_pool(),
-                    timeout_ms=CpuCountPayload.model_validate(payload).timeout_ms,
+                    self._thread_pool,
+                    timeout_ms=timeout_ms,
                 )
 
             handle.state = "completed"
@@ -313,14 +307,6 @@ class TaskRuntime:
         handle.message = "executor result received"
         await self._publish("task.progress", handle)
         return result
-
-    def _get_process_pool(self) -> ProcessPoolExecutor:
-        if self._process_pool is None:
-            self._process_pool = ProcessPoolExecutor(
-                max_workers=max(1, min(os.cpu_count() or 1, 4)),
-                mp_context=self._process_context,
-            )
-        return self._process_pool
 
     async def _publish(self, method: str, handle: TaskHandle) -> None:
         await self._writer.notification(method, handle.status().model_dump(mode="json"))

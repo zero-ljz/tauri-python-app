@@ -132,7 +132,7 @@ function Metric({
 
 const TaskCard = observer(({ task }: { task: TaskDescriptor }) => {
   const store = taskRuntimeStore;
-  const Icon = task.kind === "cpu_bound" ? Cpu : task.kind === "blocking_io" ? Database : Timer;
+  const Icon = task.name.includes("cpu") ? Cpu : task.kind === "blocking_io" ? Database : Timer;
   const busy = store.busyTaskNames.has(task.name);
 
   return (

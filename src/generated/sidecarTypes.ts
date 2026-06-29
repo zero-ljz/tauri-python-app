@@ -31,7 +31,7 @@ export interface CpuCountPayload {
 export interface TaskDescriptor {
   name: string;
   title: string;
-  kind: "async_io" | "blocking_io" | "cpu_bound";
+  kind: "async_io" | "blocking_io";
   description: string;
   default_payload: Record<string, unknown>;
 }
@@ -69,7 +69,7 @@ export interface TaskStatusParams {
 export interface TaskStatusResult {
   task_id: string;
   task_name: string;
-  kind: "async_io" | "blocking_io" | "cpu_bound";
+  kind: "async_io" | "blocking_io";
   state: "queued" | "running" | "cancelling" | "completed" | "failed" | "cancelled";
   progress: number;
   message?: string | null;

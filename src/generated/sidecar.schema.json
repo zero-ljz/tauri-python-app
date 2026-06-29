@@ -108,7 +108,7 @@
           "type": "integer"
         },
         "timeout_ms": {
-          "default": 30000,
+          "default": 60000,
           "maximum": 600000,
           "minimum": 1000,
           "title": "Timeout Ms",
@@ -132,8 +132,7 @@
         "kind": {
           "enum": [
             "async_io",
-            "blocking_io",
-            "cpu_bound"
+            "blocking_io"
           ],
           "title": "Kind",
           "type": "string"
@@ -305,8 +304,7 @@
         "kind": {
           "enum": [
             "async_io",
-            "blocking_io",
-            "cpu_bound"
+            "blocking_io"
           ],
           "title": "Kind",
           "type": "string"
