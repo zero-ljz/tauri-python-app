@@ -17,10 +17,10 @@ stderr 只输出统一格式日志。
 任务控制与并发：
 Python sidecar 使用 asyncio 负责协议解析、主循环和任务管理。
 任务注册表使用 task_id -> TaskHandle。
-任务按类型动态分发：
+任务按2种类型动态分发：
 1. async I/O 任务：
    asyncio.create_task
-2. 阻塞 I/O 任务 和 CPU 密集型任务：
+2. 阻塞 I/O 或 CPU 密集型任务：
    loop.run_in_executor + ThreadPoolExecutor
 类型同步：
 pydantic 作为 schema source of truth。
