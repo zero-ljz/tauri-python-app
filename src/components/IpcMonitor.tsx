@@ -12,6 +12,20 @@ import {
   X,
 } from "lucide-react";
 
+import { Badge } from "./ui/badge";
+import { Button } from "./ui/button";
+import { Input } from "./ui/input";
+import { Switch } from "./ui/switch";
+import {
+  Table,
+  TableBody,
+  TableCell,
+  TableHead,
+  TableHeader,
+  TableRow,
+} from "./ui/table";
+import { Tabs, TabsContent, TabsList, TabsTrigger } from "./ui/tabs";
+import { cn } from "../lib/utils";
 import { ipcMonitorStore } from "../stores/ipcMonitorStore";
 
 function highlightJson(jsonObj: unknown): string {
@@ -53,15 +67,15 @@ export const IpcMonitor = observer(() => {
 
   if (!store.isOpen) {
     return (
-      <button
-        className="fixed bottom-4 right-4 z-[65] inline-flex h-10 items-center gap-2 rounded-full border border-[#374151] bg-[#1f2937] px-4 text-sm font-semibold text-[#f3f4f6] shadow-xl shadow-black/20 transition hover:-translate-y-0.5 hover:bg-[#374151]"
+      <Button
+        className="fixed bottom-4 right-4 z-[65] h-10 rounded-full px-4 shadow-lg"
         onClick={() => store.toggleOpen()}
-        title="Open IPC Monitor (Press ` or F12)"
+        title="打开 IPC 调试面板"
         type="button"
       >
         <Bug size={16} />
-        <span>IPC Monitor</span>
-      </button>
+        <span>IPC 调试</span>
+      </Button>
     );
   }
 
@@ -87,29 +101,29 @@ export const IpcMonitor = observer(() => {
   });
 
   return (
-    <section className="fixed inset-x-0 bottom-0 z-[60] flex h-[380px] flex-col border-t border-[#2d2d34] bg-[#18181c] font-mono text-[13px] text-[#cfd0d6] shadow-2xl shadow-black/30">
-      <header className="flex h-9 shrink-0 select-none items-center justify-between border-b border-[#2d2d34] bg-[#202026] px-2">
-        <div className="flex h-full gap-0.5">
-          <MonitorTab
-            active={store.activeTab === "packets"}
-            icon={Network}
-            label={`IPC Packets (${store.packets.length})`}
-            onClick={() => store.setActiveTab("packets")}
-          />
-          <MonitorTab
-            active={store.activeTab === "logs"}
-            icon={Terminal}
-            label={`Sidecar Logs (${store.logs.length})`}
-            onClick={() => store.setActiveTab("logs")}
-          />
-        </div>
+    <Tabs
+      value={store.activeTab}
+      onValueChange={(value) => store.setActiveTab(value as "packets" | "logs")}
+      className="fixed inset-x-0 bottom-0 z-[60] flex h-[380px] flex-col gap-0 border-t bg-background font-mono text-[13px] shadow-lg"
+    >
+      <header className="flex h-12 shrink-0 select-none items-center justify-between border-b px-3">
+        <TabsList>
+          <TabsTrigger value="packets" className="gap-2">
+            <Network size={14} />
+            IPC Packets ({store.packets.length})
+          </TabsTrigger>
+          <TabsTrigger value="logs" className="gap-2">
+            <Terminal size={14} />
+            Sidecar Logs ({store.logs.length})
+          </TabsTrigger>
+        </TabsList>
 
-        <div className="flex min-w-0 items-center gap-3">
+        <div className="flex min-w-0 items-center gap-2">
           <label className="relative flex items-center">
-            <Search className="pointer-events-none absolute left-2 text-[#6b7280]" size={12} />
-            <input
-              className="h-6 w-[180px] rounded border border-[#2d2d34] bg-[#131316] py-1 pl-7 pr-2 text-xs text-[#e5e7eb] outline-none transition focus:border-[#0f766e]"
-              placeholder={store.activeTab === "packets" ? "Filter packets..." : "Filter logs..."}
+            <Search className="pointer-events-none absolute left-2 text-muted-foreground" size={13} />
+            <Input
+              className="h-8 w-[min(220px,28vw)] pl-7 text-xs"
+              placeholder={store.activeTab === "packets" ? "过滤 packets..." : "过滤 logs..."}
               value={store.activeTab === "packets" ? store.packetFilter : store.logFilter}
               onChange={(event) => {
                 if (store.activeTab === "packets") {
@@ -121,8 +135,8 @@ export const IpcMonitor = observer(() => {
             />
           </label>
 
-          <button
-            className={monitorIconButtonClass}
+          <Button
+            aria-label="清空列表"
             onClick={() => {
               if (store.activeTab === "packets") {
                 store.clearPackets();
@@ -130,177 +144,142 @@ export const IpcMonitor = observer(() => {
                 store.clearLogs();
               }
             }}
-            title="Clear list"
+            size="icon"
+            title="清空列表"
             type="button"
+            variant="ghost"
           >
-            <Trash2 size={13} />
-          </button>
+            <Trash2 size={14} />
+          </Button>
 
-          <label className="flex cursor-pointer select-none items-center gap-1.5 text-xs text-[#9ca3af]">
-            <input
-              checked={store.autoScroll}
-              className="m-0 accent-[#0f766e]"
-              onChange={() => store.toggleAutoScroll()}
-              type="checkbox"
-            />
-            <span>Auto Scroll</span>
+          <label className="hidden cursor-pointer select-none items-center gap-2 text-xs text-muted-foreground sm:flex">
+            <Switch checked={store.autoScroll} onCheckedChange={() => store.toggleAutoScroll()} />
+            <span>自动滚动</span>
           </label>
 
-          <span className="text-[11px] text-[#4b5563]">Tip: Press ` to toggle</span>
-
-          <button
-            className={`${monitorIconButtonClass} hover:bg-red-500/10 hover:text-red-400`}
+          <Button
+            aria-label="关闭"
             onClick={() => store.setOpen(false)}
-            title="Close"
+            size="icon"
+            title="关闭"
             type="button"
+            variant="ghost"
           >
             <X size={15} />
-          </button>
+          </Button>
         </div>
       </header>
 
-      <div className="min-h-0 flex-1 bg-[#18181c]">
-        {store.activeTab === "packets" ? (
-          <div className="grid h-full min-h-0 grid-cols-[55%_45%]">
-            <div ref={listRef} className="min-h-0 overflow-y-auto border-r border-[#2d2d34]">
-              <table className="w-full table-fixed border-collapse text-left">
-                <thead>
-                  <tr>
-                    <th className={packetHeaderClass}>Time</th>
-                    <th className={packetHeaderClass}>Dir</th>
-                    <th className={packetHeaderClass}>Type</th>
-                    <th className={packetHeaderClass}>Method/Event</th>
-                    <th className={packetHeaderClass}>ID</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {filteredPackets.length ? (
-                    filteredPackets.map((packet) => {
-                      const isSelected = store.selectedPacket?.id === packet.id;
-                      return (
-                        <tr
-                          key={packet.id}
-                          className={`cursor-pointer border-b border-[#1f1f26] transition hover:bg-[#23232b] ${
-                            isSelected ? "bg-[#1e293b] text-[#38bdf8]" : packet.direction === "outgoing" ? "text-[#e5e7eb]" : "text-[#9ca3af]"
-                          }`}
-                          onClick={() => store.setSelectedPacket(packet)}
-                        >
-                          <td className="w-[90px] truncate px-2.5 py-1.5 text-[#6b7280]">{packet.timestamp}</td>
-                          <td className="w-10 px-2.5 py-1.5 text-center">
-                            {packet.direction === "outgoing" ? (
-                              <ArrowUpRight className="inline text-[#3b82f6]" size={12} />
-                            ) : (
-                              <ArrowDownLeft className="inline text-[#10b981]" size={12} />
-                            )}
-                          </td>
-                          <td className="w-[90px] px-2.5 py-1.5">
-                            <PacketTypeBadge type={packet.type} />
-                          </td>
-                          <td className="truncate px-2.5 py-1.5">{packet.method}</td>
-                          <td className="w-[50px] truncate px-2.5 py-1.5 text-[#6b7280]">{packet.rpcId ?? "-"}</td>
-                        </tr>
-                      );
-                    })
-                  ) : (
-                    <tr>
-                      <td className="py-10 text-center text-[#4b5563]" colSpan={5}>
-                        No packets recorded
-                      </td>
-                    </tr>
-                  )}
-                </tbody>
-              </table>
-            </div>
+      <TabsContent value="packets" className="min-h-0 flex-1">
+        <div className="grid h-full min-h-0 md:grid-cols-[minmax(0,1.2fr)_minmax(300px,0.8fr)]">
+          <div ref={listRef} className="min-h-0 overflow-y-auto border-r">
+            <Table className="table-fixed">
+              <TableHeader>
+                <TableRow>
+                  <TableHead className="w-[90px]">Time</TableHead>
+                  <TableHead className="w-10 text-center">Dir</TableHead>
+                  <TableHead className="w-[90px]">Type</TableHead>
+                  <TableHead>Method/Event</TableHead>
+                  <TableHead className="w-[50px]">ID</TableHead>
+                </TableRow>
+              </TableHeader>
+              <TableBody>
+                {filteredPackets.length ? (
+                  filteredPackets.map((packet) => {
+                    const isSelected = store.selectedPacket?.id === packet.id;
+                    return (
+                      <TableRow
+                        key={packet.id}
+                        data-state={isSelected ? "selected" : undefined}
+                        className="cursor-pointer"
+                        onClick={() => store.setSelectedPacket(packet)}
+                      >
+                        <TableCell className="truncate text-muted-foreground">
+                          {packet.timestamp}
+                        </TableCell>
+                        <TableCell className="text-center text-muted-foreground">
+                          {packet.direction === "outgoing" ? (
+                            <ArrowUpRight className="inline" size={12} />
+                          ) : (
+                            <ArrowDownLeft className="inline" size={12} />
+                          )}
+                        </TableCell>
+                        <TableCell>
+                          <PacketTypeBadge type={packet.type} />
+                        </TableCell>
+                        <TableCell className="truncate">{packet.method}</TableCell>
+                        <TableCell className="truncate text-muted-foreground">
+                          {packet.rpcId ?? "-"}
+                        </TableCell>
+                      </TableRow>
+                    );
+                  })
+                ) : (
+                  <TableRow>
+                    <TableCell className="py-10 text-center text-muted-foreground" colSpan={5}>
+                      暂无 IPC packets
+                    </TableCell>
+                  </TableRow>
+                )}
+              </TableBody>
+            </Table>
+          </div>
 
-            <PacketDetail />
+          <PacketDetail />
+        </div>
+      </TabsContent>
+
+      <TabsContent value="logs" className="min-h-0 flex-1">
+        <div ref={listRef} className="h-full min-h-0 overflow-y-auto p-3">
+          <div className="grid gap-1">
+            {filteredLogs.length ? (
+              filteredLogs.map((log) => (
+                <div
+                  key={log.id}
+                  className={cn(
+                    "flex gap-3 rounded-md px-2 py-1 text-xs leading-5 hover:bg-muted",
+                    log.stream === "lifecycle" && "bg-muted",
+                  )}
+                >
+                  <span className="shrink-0 text-muted-foreground">{log.timestamp}</span>
+                  <span className="w-20 shrink-0 font-semibold uppercase text-muted-foreground">
+                    [{log.stream}]
+                  </span>
+                  <span className="flex-1 whitespace-pre-wrap break-all">{log.line}</span>
+                </div>
+              ))
+            ) : (
+              <div className="py-10 text-center text-muted-foreground">暂无 sidecar logs</div>
+            )}
           </div>
-        ) : (
-          <div ref={listRef} className="h-full min-h-0 overflow-y-auto p-2.5">
-            <div className="grid gap-0.5">
-              {filteredLogs.length ? (
-                filteredLogs.map((log) => (
-                  <div
-                    key={log.id}
-                    className={`flex gap-3 rounded-[2px] px-1 py-0.5 text-xs leading-5 hover:bg-white/[0.02] ${
-                      log.stream === "lifecycle" ? "bg-sky-400/[0.04] text-[#38bdf8]" : "text-[#e5e7eb]"
-                    }`}
-                  >
-                    <span className="shrink-0 text-[#4b5563]">{log.timestamp}</span>
-                    <span
-                      className={`w-20 shrink-0 font-semibold uppercase ${
-                        log.stream === "stderr" ? "text-[#f59e0b]" : "text-[#0ea5e9]"
-                      }`}
-                    >
-                      [{log.stream}]
-                    </span>
-                    <span className="flex-1 whitespace-pre-wrap break-all">{log.line}</span>
-                  </div>
-                ))
-              ) : (
-                <div className="py-10 text-center text-[#4b5563]">No logs recorded</div>
-              )}
-            </div>
-          </div>
-        )}
-      </div>
-    </section>
+        </div>
+      </TabsContent>
+    </Tabs>
   );
 });
-
-const monitorIconButtonClass =
-  "grid h-7 w-7 place-items-center rounded border border-transparent bg-transparent text-[#9ca3af] transition hover:bg-[#2d2d34] hover:text-[#f3f4f6]";
-const packetHeaderClass =
-  "sticky top-0 z-10 border-b border-[#2d2d34] bg-[#1e1e24] px-2.5 py-1.5 text-xs font-semibold uppercase text-[#9ca3af]";
-
-function MonitorTab({
-  active,
-  icon: Icon,
-  label,
-  onClick,
-}: {
-  active: boolean;
-  icon: typeof Network;
-  label: string;
-  onClick: () => void;
-}) {
-  return (
-    <button
-      className={`flex h-full items-center gap-1.5 border-b-2 px-3.5 text-[13px] transition ${
-        active
-          ? "border-[#2dd4bf] bg-[#18181c] text-[#2dd4bf]"
-          : "border-transparent bg-transparent text-[#9ca3af] hover:bg-white/[0.02] hover:text-[#e5e7eb]"
-      }`}
-      onClick={onClick}
-      type="button"
-    >
-      <Icon size={14} />
-      <span>{label}</span>
-    </button>
-  );
-}
 
 function PacketDetail() {
   const selectedPacket = ipcMonitorStore.selectedPacket;
 
   if (!selectedPacket) {
     return (
-      <div className="grid h-full min-h-0 place-items-center bg-[#1c1c22] text-[#4b5563]">
+      <div className="grid h-full min-h-0 place-items-center bg-muted text-muted-foreground">
         <div className="grid justify-items-center gap-2.5">
           <Info size={24} />
-          <p className="m-0">Select a packet to view details</p>
+          <p className="m-0">选择一个 packet 查看详情</p>
         </div>
       </div>
     );
   }
 
   return (
-    <div className="flex h-full min-h-0 flex-col overflow-y-auto bg-[#1c1c22] p-3">
-      <div className="mb-2.5 flex items-center justify-between border-b border-[#2d2d34] pb-2">
-        <h4 className="m-0 text-sm font-semibold text-[#e5e7eb]">Packet Details</h4>
+    <div className="flex h-full min-h-0 flex-col overflow-y-auto bg-muted p-3">
+      <div className="mb-3 flex items-center justify-between border-b pb-2">
+        <h4 className="m-0 text-sm font-semibold">Packet Details</h4>
         <PacketTypeBadge type={selectedPacket.type} />
       </div>
 
-      <div className="mb-3 grid gap-1 rounded bg-[#141418] p-2 text-xs text-[#9ca3af]">
+      <div className="mb-3 grid gap-1 rounded-md border bg-background p-2 text-xs text-muted-foreground">
         <div>
           <strong>Direction:</strong> {selectedPacket.direction}
         </div>
@@ -312,7 +291,7 @@ function PacketDetail() {
         </div>
       </div>
 
-      <div className="min-h-0 flex-1 overflow-auto rounded border border-[#232328] bg-[#131316]">
+      <div className="min-h-0 flex-1 overflow-auto rounded-md border bg-background">
         <pre className="m-0 whitespace-pre-wrap break-all p-2.5 text-[12px] leading-5">
           <code dangerouslySetInnerHTML={{ __html: highlightJson(selectedPacket.payload) }} />
         </pre>
@@ -322,16 +301,16 @@ function PacketDetail() {
 }
 
 function PacketTypeBadge({ type }: { type: "request" | "response" | "notification" }) {
-  const className = {
-    request: "bg-blue-500/15 text-blue-300",
-    response: "bg-emerald-500/15 text-emerald-300",
-    notification: "bg-amber-500/15 text-amber-300",
-  }[type];
+  const variant = {
+    request: "default",
+    response: "secondary",
+    notification: "outline",
+  } as const;
 
   return (
-    <span className={`inline-flex rounded-[3px] px-1.5 py-0.5 text-[10px] font-bold uppercase ${className}`}>
+    <Badge className="rounded px-1.5 py-0 text-[10px] font-bold uppercase" variant={variant[type]}>
       {type}
-    </span>
+    </Badge>
   );
 }
 
