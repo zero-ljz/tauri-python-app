@@ -3,7 +3,7 @@
 框架：
 Tauri v2
 前端：
-Vite + React + TypeScript + MobX + Radix Primitives + Tailwind CSS v4
+Vite + React + TypeScript + MobX + shadcn/ui + Tailwind CSS v4
 Rust 层：
 SidecarManager + RpcClient + EventBridge
 后端与通信：
@@ -30,6 +30,7 @@ pydantic 作为 schema source of truth。
 短操作使用 request/response。
 长任务使用 request/response 控制，使用 notification 推送状态。
 
-特性:
-无边框窗口(支持最小化, 最大化/还原, 关闭, 标题栏双击最大化/还原, 拖动标题栏移动窗口, 拖动窗口边缘调整窗口大小), 
-支持深浅色模式切换, 带有Web菜单栏, 首选项模态框, 可折叠侧边导航
+功能:
+无边框窗口(支持最小化, 最大化/还原, 关闭, 标题栏双击最大化/还原, 拖动标题栏移动窗口, 拖动窗口边缘调整窗口大小)
+界面采用 shadcn/ui 基础风格， 支持深浅色模式切换, 基于Web的菜单栏, 可折叠式侧边导航栏, 首选项模态框
+IPC Packet Monitor 抽屉
