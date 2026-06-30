@@ -1,22 +1,16 @@
-mod sidecar;
-mod rpc;
 mod bridge;
 mod commands;
+mod rpc;
+mod sidecar;
 
 use std::sync::Arc;
-use tokio::sync::Mutex;
 use tauri::{Emitter, Manager};
+use tokio::sync::Mutex;
 
-use sidecar::SidecarManager;
-use rpc::RpcClient;
 use bridge::EventBridge;
-use commands::{
-    AppState,
-    sidecar_status, sidecar_stop,
-    rpc_request, rpc_notify,
-    window_minimize, window_maximize, window_close,
-    window_is_maximized, window_start_drag,
-};
+use commands::{rpc_notify, rpc_request, sidecar_logs, sidecar_status, sidecar_stop, AppState};
+use rpc::RpcClient;
+use sidecar::SidecarManager;
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
@@ -70,14 +64,10 @@ pub fn run() {
         // 绑定注册前端可调用的 Tauri Commands
         .invoke_handler(tauri::generate_handler![
             sidecar_status,
+            sidecar_logs,
             sidecar_stop,
             rpc_request,
             rpc_notify,
-            window_minimize,
-            window_maximize,
-            window_close,
-            window_is_maximized,
-            window_start_drag,
         ])
         .run(tauri::generate_context!())
         .expect("运行 Tauri 主应用时发生异常");

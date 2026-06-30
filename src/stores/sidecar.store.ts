@@ -1,7 +1,9 @@
 import { makeAutoObservable, runInAction } from "mobx";
-import { sidecarStatus, listenSidecar } from "@/lib/tauri-rpc";
+import { sidecarLogs, sidecarStatus, listenSidecar, listenSidecarRaw } from "@/lib/tauri-rpc";
+import { rpcStore } from "@/stores/rpc.store";
 import type { UnlistenFn } from "@tauri-apps/api/event";
 import type {
+  LogPayload,
   SidecarReadyPayload,
   TaskProgress,
   TaskResult,
@@ -47,9 +49,16 @@ class SidecarStore {
         listenSidecar<TaskStatus>("task.status", this.handleTaskStatus),
         listenSidecar<TaskProgress>("task.progress", this.handleTaskProgress),
         listenSidecar<TaskResult>("task.result", this.handleTaskResult),
+        listenSidecarRaw<LogPayload>("sidecar.log", this.handleSidecarLog),
       ]);
       runInAction(() => {
         this._unlisteners = unlisteners;
+      });
+      const logs = await sidecarLogs();
+      runInAction(() => {
+        for (const log of logs) {
+          rpcStore.addSidecarLog(log);
+        }
       });
     } catch (error) {
       runInAction(() => {
@@ -142,6 +151,10 @@ class SidecarStore {
         error: payload.error,
       });
     });
+  }
+
+  private handleSidecarLog(payload: LogPayload) {
+    rpcStore.addSidecarLog(payload);
   }
 
   // 动态修改状态的方法

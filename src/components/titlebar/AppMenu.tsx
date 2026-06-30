@@ -9,8 +9,10 @@ import {
   MenubarSeparator,
   MenubarTrigger,
 } from "@/components/ui/menubar";
-import { windowClose } from "@/lib/tauri-rpc";
+import { getCurrentWindow } from "@tauri-apps/api/window";
 import { appStore } from "@/stores/app.store";
+
+const appWindow = getCurrentWindow();
 
 // 具有 Windows 原生体验且支持平铺自适应折叠的菜单栏组件
 export const AppMenu = observer(() => {
@@ -25,7 +27,7 @@ export const AppMenu = observer(() => {
   }, []);
 
   const handleExit = () => {
-    windowClose().catch(() => {});
+    appWindow.close().catch(() => {});
   };
 
   // 优化折叠阈值：只有在空间确实非常紧凑时才启动阶梯式折叠

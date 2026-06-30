@@ -1,6 +1,7 @@
 import { invoke } from "@tauri-apps/api/core";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import { rpcStore } from "@/stores/rpc.store";
+import type { LogPayload } from "@/types/generated";
 
 function errorMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
@@ -45,15 +46,17 @@ export function listenSidecar<T = unknown>(
   });
 }
 
-// ─── 无边框窗口控制 API ───────────────────────────────────────────────────────
-
-export const windowMinimize = () => invoke("window_minimize");
-export const windowMaximize = () => invoke("window_maximize");
-export const windowClose = () => invoke("window_close");
-export const windowIsMaximized = () => invoke<boolean>("window_is_maximized");
-export const windowStartDrag = () => invoke("window_start_drag");
+export function listenSidecarRaw<T = unknown>(
+  method: string,
+  handler: (payload: T) => void
+): Promise<UnlistenFn> {
+  return listen<T>(`sidecar://${method}`, (event) => {
+    handler(event.payload);
+  });
+}
 
 // ─── Sidecar 状态查询 API ─────────────────────────────────────────────────────
 
 export const sidecarStatus = () => invoke<boolean>("sidecar_status");
+export const sidecarLogs = () => invoke<LogPayload[]>("sidecar_logs");
 export const sidecarStop = () => invoke("sidecar_stop");

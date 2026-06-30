@@ -1,32 +1,75 @@
 import { observer } from "mobx-react-lite";
 import { X } from "lucide-react";
 import { useState, useEffect } from "react";
-import { windowMinimize, windowMaximize, windowClose, windowIsMaximized } from "@/lib/tauri-rpc";
+import { getCurrentWindow } from "@tauri-apps/api/window";
 import { cn } from "@/lib/utils";
+
+const appWindow = getCurrentWindow();
 
 // Windows 经典风格窗口控制按钮组件 (最小化、最大化/还原、关闭)
 export const WindowControls = observer(() => {
   const [isMaximized, setIsMaximized] = useState(false);
 
   useEffect(() => {
-    // 初始化获取最大化状态
-    windowIsMaximized().then(setIsMaximized).catch(() => {});
-    
-    // 定时轮询同步最大化状态
-    const interval = setInterval(() => {
-      windowIsMaximized().then(setIsMaximized).catch(() => {});
-    }, 500);
-    
-    return () => clearInterval(interval);
+    let mounted = true;
+    let syncTimer: ReturnType<typeof window.setTimeout> | null = null;
+    let unlistenResize: (() => void) | null = null;
+
+    const syncMaximized = () => {
+      appWindow
+        .isMaximized()
+        .then((next) => {
+          if (mounted) {
+            setIsMaximized(next);
+          }
+        })
+        .catch(() => {});
+    };
+
+    const scheduleSync = () => {
+      if (syncTimer != null) {
+        window.clearTimeout(syncTimer);
+      }
+      syncTimer = window.setTimeout(syncMaximized, 80);
+    };
+
+    syncMaximized();
+    appWindow
+      .onResized(scheduleSync)
+      .then((unlisten) => {
+        if (mounted) {
+          unlistenResize = unlisten;
+        } else {
+          unlisten();
+        }
+      })
+      .catch(() => {});
+
+    return () => {
+      mounted = false;
+      if (syncTimer != null) {
+        window.clearTimeout(syncTimer);
+      }
+      unlistenResize?.();
+    };
   }, []);
 
-  const handleMinimize = () => windowMinimize();
-  const handleMaximize = async () => {
-    await windowMaximize();
-    const next = await windowIsMaximized();
-    setIsMaximized(next);
+  const handleMinimize = () => {
+    appWindow.minimize().catch(() => {});
   };
-  const handleClose = () => windowClose();
+
+  const handleMaximize = async () => {
+    try {
+      await appWindow.toggleMaximize();
+      setIsMaximized(await appWindow.isMaximized());
+    } catch {
+      // 窗口状态同步失败时保持当前图标状态。
+    }
+  };
+
+  const handleClose = () => {
+    appWindow.close().catch(() => {});
+  };
 
   return (
     <div className="flex items-center h-full">

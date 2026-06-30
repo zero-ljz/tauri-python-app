@@ -1,4 +1,5 @@
 import { makeAutoObservable } from "mobx";
+import type { LogPayload } from "@/types/generated";
 
 // 报文流向类型
 export type RpcDirection = "request" | "response" | "notification" | "error";
@@ -15,10 +16,26 @@ export interface RpcEntry {
   duration?: number;   // 双向通信耗时（毫秒）
 }
 
+export interface SidecarLogEntry {
+  id: string;
+  timestamp: number;
+  level: NonNullable<LogPayload["level"]>;
+  stream: NonNullable<LogPayload["stream"]>;
+  source: string;
+  message: string;
+  context?: Record<string, unknown> | null;
+}
+
+const logLevels = new Set(["debug", "info", "warning", "error"]);
+const logStreams = new Set(["stderr", "process"]);
+
 // 调试面板使用的 RPC 报文存储 Store
 class RpcStore {
   entries: RpcEntry[] = [];
+  logs: SidecarLogEntry[] = [];
   maxEntries = 200;    // 循环缓冲区最大长度，防止内存暴涨
+  maxLogs = 500;
+  private logIds = new Set<string>();
 
   constructor() {
     makeAutoObservable(this);
@@ -36,6 +53,8 @@ class RpcStore {
   // 清空报文面板
   clear() {
     this.entries = [];
+    this.logs = [];
+    this.logIds.clear();
   }
 
   /**
@@ -65,6 +84,36 @@ class RpcStore {
       method,
       params,
     });
+  }
+
+  addSidecarLog(payload: LogPayload) {
+    const level = payload.level && logLevels.has(payload.level) ? payload.level : "info";
+    const stream = payload.stream && logStreams.has(payload.stream) ? payload.stream : "stderr";
+    const id = payload.seq != null
+      ? `sidecar-${payload.seq}`
+      : `${Date.now()}-${Math.random().toString(36).slice(2)}`;
+
+    if (this.logIds.has(id)) {
+      return;
+    }
+    this.logIds.add(id);
+
+    this.logs.unshift({
+      id,
+      timestamp: payload.timestamp_ms ?? Date.now(),
+      level,
+      stream,
+      source: payload.source ?? "sidecar",
+      message: payload.message,
+      context: payload.context,
+    });
+
+    if (this.logs.length > this.maxLogs) {
+      for (const entry of this.logs.slice(this.maxLogs)) {
+        this.logIds.delete(entry.id);
+      }
+      this.logs = this.logs.slice(0, this.maxLogs);
+    }
   }
 }
 

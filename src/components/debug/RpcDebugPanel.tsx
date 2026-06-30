@@ -1,6 +1,6 @@
 import { observer } from "mobx-react-lite";
 import { useState } from "react";
-import { rpcStore, type RpcEntry } from "@/stores/rpc.store";
+import { rpcStore, type RpcEntry, type SidecarLogEntry } from "@/stores/rpc.store";
 import { rpcRequest } from "@/lib/tauri-rpc";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { Button } from "@/components/ui/button";
@@ -24,6 +24,13 @@ const directionLabels: Record<RpcEntry["direction"], string> = {
   response: "RES",
   notification: "NTF",
   error: "ERR",
+};
+
+const logLevelColors: Record<SidecarLogEntry["level"], string> = {
+  debug: "text-slate-500",
+  info: "text-sky-500",
+  warning: "text-amber-500",
+  error: "text-red-500",
 };
 
 // 单行报文条目组件（支持展开折叠展示参数/结果明细）
@@ -64,8 +71,8 @@ const EntryRow = observer(({ entry }: { entry: RpcEntry }) => {
   );
 });
 
-// 报文日志记录面板
-const LogPanel = observer(() => (
+// 报文历史面板
+const MessagePanel = observer(() => (
   <ScrollArea className="h-full">
     <div className="divide-y divide-[hsl(var(--border))]">
       {rpcStore.entries.length === 0 ? (
@@ -74,6 +81,46 @@ const LogPanel = observer(() => (
         </div>
       ) : (
         rpcStore.entries.map((entry) => <EntryRow key={entry.id} entry={entry} />)
+      )}
+    </div>
+  </ScrollArea>
+));
+
+const SidecarLogRow = ({ entry }: { entry: SidecarLogEntry }) => {
+  const time = new Date(entry.timestamp).toLocaleTimeString("zh-CN", { hour12: false });
+
+  return (
+    <div className="border-b border-[hsl(var(--border))] px-3 py-2 last:border-0">
+      <div className="flex items-start gap-2 text-xs">
+        <span className="w-16 shrink-0 font-mono text-[hsl(var(--muted-foreground))]">{time}</span>
+        <span className={cn("w-14 shrink-0 font-mono font-bold uppercase", logLevelColors[entry.level])}>
+          {entry.level}
+        </span>
+        <span className="w-20 shrink-0 truncate font-mono text-[hsl(var(--muted-foreground))]">
+          {entry.source}/{entry.stream}
+        </span>
+        <span className="min-w-0 flex-1 whitespace-pre-wrap break-words font-mono text-[hsl(var(--foreground))]">
+          {entry.message}
+        </span>
+      </div>
+      {entry.context && (
+        <pre className="mt-2 overflow-x-auto rounded bg-[hsl(var(--muted))] p-2 text-xs font-mono whitespace-pre-wrap break-all">
+          {JSON.stringify(entry.context, null, 2)}
+        </pre>
+      )}
+    </div>
+  );
+};
+
+const SidecarLogsPanel = observer(() => (
+  <ScrollArea className="h-full">
+    <div className="divide-y divide-[hsl(var(--border))]">
+      {rpcStore.logs.length === 0 ? (
+        <div className="flex h-32 items-center justify-center text-sm text-[hsl(var(--muted-foreground))]">
+          暂无 Sidecar 日志
+        </div>
+      ) : (
+        rpcStore.logs.map((entry) => <SidecarLogRow key={entry.id} entry={entry} />)
       )}
     </div>
   </ScrollArea>
@@ -163,22 +210,26 @@ export const RpcDebugPanel = observer(() => {
           size="icon"
           className="h-6 w-6"
           onClick={() => rpcStore.clear()}
-          title="清空记录"
+          title="清空报文和日志"
         >
           <Trash2 className="h-3.5 w-3.5" />
         </Button>
       </div>
 
-      {/* 选项卡划分：报文日志与手动请求 */}
-      <Tabs defaultValue="log" className="flex flex-col flex-1 min-h-0">
+      {/* 选项卡划分：报文、Sidecar 日志与手动请求 */}
+      <Tabs defaultValue="messages" className="flex flex-col flex-1 min-h-0">
         <div className="px-2 pt-1">
-          <TabsList className="h-7 w-full">
-            <TabsTrigger value="log" className="flex-1 text-xs">报文历史日志</TabsTrigger>
-            <TabsTrigger value="send" className="flex-1 text-xs">模拟发送请求</TabsTrigger>
+          <TabsList className="grid h-7 w-full grid-cols-3 rounded-md p-0.5">
+            <TabsTrigger value="messages" className="h-6 rounded px-2 py-0 text-xs leading-none">报文</TabsTrigger>
+            <TabsTrigger value="logs" className="h-6 rounded px-2 py-0 text-xs leading-none">日志</TabsTrigger>
+            <TabsTrigger value="send" className="h-6 rounded px-2 py-0 text-xs leading-none">请求</TabsTrigger>
           </TabsList>
         </div>
-        <TabsContent value="log" className="flex-1 min-h-0 mt-0">
-          <LogPanel />
+        <TabsContent value="messages" className="flex-1 min-h-0 mt-0">
+          <MessagePanel />
+        </TabsContent>
+        <TabsContent value="logs" className="flex-1 min-h-0 mt-0">
+          <SidecarLogsPanel />
         </TabsContent>
         <TabsContent value="send" className="flex-1 min-h-0 mt-0 overflow-y-auto">
           <SendPanel />

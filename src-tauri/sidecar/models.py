@@ -7,13 +7,14 @@ from typing import Any, Literal, Optional, Union
 from pydantic import BaseModel, Field
 from pydantic import RootModel
 
+JsonRpcId = Optional[Union[str, int]]
 
 # ─── JSON-RPC 2.0 基础协议消息模型 ─────────────────────────────────────────────
 
 class RpcRequest(BaseModel):
     """从 Rust 端通过 stdin 接收的 JSON-RPC 2.0 请求实体"""
     jsonrpc: Literal["2.0"] = "2.0"
-    id: Optional[str] = None
+    id: JsonRpcId = None
     method: str
     params: Any = None
 
@@ -28,14 +29,14 @@ class RpcError(BaseModel):
 class RpcSuccessResponse(BaseModel):
     """向 Rust (stdout) 反馈的 JSON-RPC 2.0 成功响应实体"""
     jsonrpc: Literal["2.0"] = "2.0"
-    id: Optional[str] = None
+    id: JsonRpcId = None
     result: Any
 
 
 class RpcErrorResponse(BaseModel):
     """向 Rust (stdout) 反馈的 JSON-RPC 2.0 错误响应实体"""
     jsonrpc: Literal["2.0"] = "2.0"
-    id: Optional[str] = None
+    id: JsonRpcId = None
     error: RpcError
 
 
@@ -110,6 +111,10 @@ class SidecarReadyPayload(BaseModel):
 
 class LogPayload(BaseModel):
     """主动向调试台推送的格式化日志包，配合 Debug 面板的实时展现"""
-    level: Literal["debug", "info", "warning", "error"]
+    seq: Optional[int] = None
+    timestamp_ms: Optional[int] = None
+    level: Literal["debug", "info", "warning", "error"] = "info"
+    stream: Literal["stderr", "process"] = "stderr"
+    source: str = "sidecar"
     message: str
     context: Optional[dict[str, Any]] = None

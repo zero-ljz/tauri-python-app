@@ -3,13 +3,13 @@
 
 export interface RpcErrorResponse {
   jsonrpc?: "2.0";
-  id?: string | null;
+  id?: string | number | null;
   error: RpcError;
 }
 
 export interface RpcSuccessResponse {
   jsonrpc?: "2.0";
-  id?: string | null;
+  id?: string | number | null;
   result: unknown;
 }
 
@@ -21,7 +21,7 @@ export interface RpcError {
 
 export interface RpcRequest {
   jsonrpc?: "2.0";
-  id?: string | null;
+  id?: string | number | null;
   method: string;
   params?: unknown;
 }
@@ -79,7 +79,11 @@ export interface SidecarReadyPayload {
 }
 
 export interface LogPayload {
-  level: "debug" | "info" | "warning" | "error";
+  seq?: number | null;
+  timestamp_ms?: number | null;
+  level?: "debug" | "info" | "warning" | "error";
+  stream?: "stderr" | "process";
+  source?: string;
   message: string;
   context?: Record<string, unknown> | null;
 }

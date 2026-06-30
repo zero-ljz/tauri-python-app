@@ -1,11 +1,11 @@
-use std::sync::Arc;
-use tauri::{command, AppHandle, Emitter, State, Window};
-use tokio::sync::Mutex;
-use serde_json::Value;
 use anyhow::Result;
+use serde_json::Value;
+use std::sync::Arc;
+use tauri::{command, AppHandle, Emitter, State};
+use tokio::sync::Mutex;
 
-use crate::sidecar::SidecarManager;
 use crate::rpc::RpcClient;
+use crate::sidecar::{SidecarLogPayload, SidecarManager};
 
 /// 注入 Tauri 托管状态的全局应用共享状态结构体
 pub struct AppState {
@@ -22,10 +22,15 @@ pub async fn sidecar_status(state: State<'_, Arc<AppState>>) -> Result<bool, Str
 }
 
 #[command]
-pub async fn sidecar_stop(
+pub async fn sidecar_logs(
     state: State<'_, Arc<AppState>>,
-    app: AppHandle,
-) -> Result<(), String> {
+) -> Result<Vec<SidecarLogPayload>, String> {
+    let sidecar = state.sidecar.lock().await;
+    Ok(sidecar.log_snapshot())
+}
+
+#[command]
+pub async fn sidecar_stop(state: State<'_, Arc<AppState>>, app: AppHandle) -> Result<(), String> {
     let mut sidecar = state.sidecar.lock().await;
     sidecar.stop().map_err(|e| e.to_string())?;
     state.rpc.mark_unready("Sidecar 进程已手动停止");
@@ -64,35 +69,4 @@ pub async fn rpc_notify(
         .notify(&method, params)
         .await
         .map_err(|e| e.to_string())
-}
-
-// ─── 无边框自定义标题栏窗口原生控制命令 ───────────────────────────────────────
-
-#[command]
-pub async fn window_minimize(window: Window) -> Result<(), String> {
-    window.minimize().map_err(|e| e.to_string())
-}
-
-#[command]
-pub async fn window_maximize(window: Window) -> Result<(), String> {
-    if window.is_maximized().map_err(|e| e.to_string())? {
-        window.unmaximize().map_err(|e| e.to_string())
-    } else {
-        window.maximize().map_err(|e| e.to_string())
-    }
-}
-
-#[command]
-pub async fn window_close(window: Window) -> Result<(), String> {
-    window.close().map_err(|e| e.to_string())
-}
-
-#[command]
-pub async fn window_is_maximized(window: Window) -> Result<bool, String> {
-    window.is_maximized().map_err(|e| e.to_string())
-}
-
-#[command]
-pub async fn window_start_drag(window: Window) -> Result<(), String> {
-    window.start_dragging().map_err(|e| e.to_string())
 }

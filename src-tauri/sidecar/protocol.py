@@ -9,11 +9,12 @@ import asyncio
 import json
 import sys
 import logging
-from typing import Any, Optional
+from typing import Any, Union
 
 from models import RpcNotification, RpcError
 
 logger = logging.getLogger(__name__)
+JsonRpcId = Union[str, int, None]
 
 # 全局 stdout 锁：保证多协程并发写入标准输出时的线程安全，防止报文交错重叠
 _stdout_lock = asyncio.Lock()
@@ -27,7 +28,7 @@ async def write_message(obj: dict[str, Any]) -> None:
         sys.stdout.flush()
 
 
-async def send_response(id: Optional[str], result: Any) -> None:
+async def send_response(id: JsonRpcId, result: Any) -> None:
     """向 Rust 发送成功应答响应报文。"""
     await write_message({
         "jsonrpc": "2.0",
@@ -36,7 +37,7 @@ async def send_response(id: Optional[str], result: Any) -> None:
     })
 
 
-async def send_error(id: Optional[str], code: int, message: str, data: Any = None) -> None:
+async def send_error(id: JsonRpcId, code: int, message: str, data: Any = None) -> None:
     """向 Rust 发送失败应答响应报文。"""
     error = RpcError(code=code, message=message, data=data).model_dump(exclude_none=True)
     await write_message({
@@ -78,6 +79,7 @@ async def stdin_reader(queue: asyncio.Queue[dict[str, Any]]) -> None:
                 await queue.put(msg)
             except json.JSONDecodeError as e:
                 logger.warning("丢弃非合规 JSON 报文: %s — 原始报文: %s", e, line)
+                await send_error(None, -32700, "Parse error")
         except asyncio.CancelledError:
             break
         except Exception as e:

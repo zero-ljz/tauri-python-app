@@ -1,9 +1,9 @@
-use std::sync::Arc;
-use tokio::sync::{oneshot, Mutex};
+use anyhow::Result;
 use dashmap::DashMap;
 use serde_json::Value;
+use std::sync::Arc;
+use tokio::sync::{oneshot, Mutex};
 use uuid::Uuid;
-use anyhow::Result;
 
 use crate::sidecar::SidecarManager;
 
@@ -63,11 +63,7 @@ impl RpcClient {
     }
 
     /// 发送一个 JSON-RPC 2.0 请求并等待响应（带 30 秒超时控制）
-    pub async fn request(
-        &self,
-        method: &str,
-        params: Option<Value>,
-    ) -> Result<Value> {
+    pub async fn request(&self, method: &str, params: Option<Value>) -> Result<Value> {
         self.wait_until_process_running().await?;
 
         let id = Uuid::new_v4().to_string();

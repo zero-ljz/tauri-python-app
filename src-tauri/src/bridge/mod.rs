@@ -1,7 +1,7 @@
+use log::{debug, warn};
+use serde_json::Value;
 use std::sync::Arc;
 use tauri::{AppHandle, Emitter};
-use serde_json::Value;
-use log::{debug, warn};
 
 use crate::rpc::RpcClient;
 
@@ -17,6 +17,14 @@ impl EventBridge {
         Self { app, rpc }
     }
 
+    fn response_id(msg: &Value) -> Option<String> {
+        match msg.get("id") {
+            Some(Value::String(id)) => Some(id.clone()),
+            Some(Value::Number(id)) => Some(id.to_string()),
+            _ => None,
+        }
+    }
+
     /// 接收从 Sidecar (stdout) 读取的每行 JSON 报文并进行解析和流向调度。
     pub fn handle_message(&self, msg: Value) {
         let jsonrpc = msg.get("jsonrpc").and_then(|v| v.as_str()).unwrap_or("");
@@ -26,16 +34,18 @@ impl EventBridge {
         }
 
         // 判定是否是带 ID 的响应报文 (Response)
-        if let Some(id) = msg.get("id").and_then(|v| v.as_str()) {
+        if let Some(id) = Self::response_id(&msg) {
             if let Some(error) = msg.get("error") {
-                let err_msg = error.get("message")
+                let err_msg = error
+                    .get("message")
                     .and_then(|v| v.as_str())
                     .unwrap_or("未知 RPC 响应内部错误");
                 debug!("[EventBridge] 收到错误响应: id={}, message={}", id, err_msg);
-                self.rpc.resolve_response(id, Err(anyhow::anyhow!("{}", err_msg)));
+                self.rpc
+                    .resolve_response(&id, Err(anyhow::anyhow!("{}", err_msg)));
             } else if let Some(result) = msg.get("result") {
                 debug!("[EventBridge] 收到正常响应: id={}, result={:?}", id, result);
-                self.rpc.resolve_response(id, Ok(result.clone()));
+                self.rpc.resolve_response(&id, Ok(result.clone()));
             } else {
                 warn!("[EventBridge] 响应报文缺少 result/error 字段: {:?}", msg);
             }

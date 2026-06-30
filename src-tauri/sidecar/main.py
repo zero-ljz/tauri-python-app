@@ -8,6 +8,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import sys
+from typing import Any
 
 # Windows/PyInstaller 环境默认编码可能不是 UTF-8；显式固定协议与日志编码。
 if hasattr(sys.stdout, "reconfigure"):
@@ -37,29 +38,48 @@ registry = TaskRegistry()
 MAX_INBOUND_QUEUE = 128
 MAX_CONCURRENT_DISPATCH = 16
 
-async def dispatch(msg: dict) -> None:
+def response_id(msg: dict[str, Any]) -> str | int | None:
+    """Return a JSON-RPC response id, or null when the id is absent/invalid."""
+    value = msg.get("id")
+    return value if isinstance(value, (str, int)) else None
+
+
+async def dispatch(msg: Any) -> None:
     """对流入的 JSON-RPC 消息进行结构验证与分发执行。"""
-    jsonrpc = msg.get("jsonrpc")
-    if jsonrpc != "2.0":
-        logger.warning("丢弃不符合规范的非 JSON-RPC 2.0 报文: %s", msg)
+    if not isinstance(msg, dict):
+        logger.warning("收到非对象 JSON-RPC 报文: %s", msg)
+        await send_error(None, -32600, "Invalid Request")
         return
 
-    msg_id = msg.get("id")
-    method = msg.get("method", "")
+    msg_has_id = "id" in msg
+    msg_id = response_id(msg)
+    jsonrpc = msg.get("jsonrpc")
+    if jsonrpc != "2.0":
+        logger.warning("收到不符合规范的非 JSON-RPC 2.0 报文: %s", msg)
+        await send_error(msg_id, -32600, "Invalid Request")
+        return
+
+    method = msg.get("method")
+    if not isinstance(method, str) or not method:
+        logger.warning("收到缺少有效 method 的 JSON-RPC 报文: %s", msg)
+        if msg_has_id:
+            await send_error(msg_id, -32600, "Invalid Request")
+        return
+
     params = msg.get("params")
 
     try:
         # 使用装饰器派发器调用方法，并将 TaskRegistry 依赖动态注入进去
         result = await dispatcher.call(method, params, registry=registry)
-        if msg_id is not None:
+        if msg_has_id:
             await send_response(msg_id, result)
     except RpcMethodNotFoundError as e:
         logger.warning("执行 RPC 方法 %s 时未找到处理器: %s", method, e)
-        if msg_id is not None:
+        if msg_has_id:
             await send_error(msg_id, -32601, str(e))
     except Exception as e:
         logger.exception("执行 RPC 方法 %s 时发生内部异常: %s", method, e)
-        if msg_id is not None:
+        if msg_has_id:
             await send_error(msg_id, -32603, str(e))
 
 
@@ -78,14 +98,14 @@ async def main() -> None:
     )
 
     # 启动后台 stdin 协程异步读取管道行流
-    queue: asyncio.Queue[dict] = asyncio.Queue(maxsize=MAX_INBOUND_QUEUE)
+    queue: asyncio.Queue[Any] = asyncio.Queue(maxsize=MAX_INBOUND_QUEUE)
     dispatch_slots = asyncio.Semaphore(MAX_CONCURRENT_DISPATCH)
     active_dispatch_tasks: set[asyncio.Task] = set()
     reader_task = asyncio.create_task(stdin_reader(queue), name="stdin-reader")
 
     logger.info("Sidecar 已进入主轮询事件循环")
 
-    async def run_dispatch_with_slot(msg: dict) -> None:
+    async def run_dispatch_with_slot(msg: Any) -> None:
         try:
             await dispatch(msg)
         finally:

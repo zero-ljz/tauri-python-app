@@ -6,9 +6,12 @@
   "scripts": {
     "dev": "vite",
     "gen:types": "python scripts/gen_types.py",
+    "build:sidecar": "python scripts/build_sidecar.py",
     "build": "pnpm gen:types && tsc && vite build",
+    "build:release": "pnpm build:sidecar && pnpm build",
     "preview": "vite preview",
-    "tauri": "tauri"
+    "tauri": "tauri",
+    "tauri:build": "pnpm tauri build"
   },
   "dependencies": {
     "@radix-ui/react-dialog": "^1.1.17",
