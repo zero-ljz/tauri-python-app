@@ -1,4 +1,4 @@
-# Logs
+# 日志记录
 logs
 *.log
 npm-debug.log*
@@ -7,15 +7,14 @@ yarn-error.log*
 pnpm-debug.log*
 lerna-debug.log*
 
+# 依赖与编译产物
 node_modules
 dist
 dist-ssr
 *.local
-backend/.venv
-backend/**/__pycache__
-backend/**/*.pyc
+.vite
 
-# Editor directories and files
+# 编译器与编辑器缓存
 .vscode/*
 !.vscode/extensions.json
 .idea
@@ -25,3 +24,17 @@ backend/**/*.pyc
 *.njsproj
 *.sln
 *.sw?
+
+# ─── Python Sidecar 与打包缓存 (新增) ───
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.pytest_cache/
+.venv
+venv
+ENV/
+env/
+build/
+*.spec
+src/types/schema.json

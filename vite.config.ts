@@ -1,36 +1,30 @@
 import { defineConfig } from "vite";
 import react from "@vitejs/plugin-react";
-// @ts-expect-error type error without @types/node package
+import tailwindcss from "@tailwindcss/vite";
+import path from "node:path";
+// @ts-expect-error 如果未安装 @types/node，此处可能会有类型警告，使用 ignore 忽略
 import process from "node:process";
+
 const host = process.env.TAURI_DEV_HOST;
 
-// https://vite.dev/config/
 export default defineConfig(() => ({
-  plugins: [react()],
+  plugins: [tailwindcss(), react()],
   resolve: {
     alias: {
-      "@": "/src",
+      // 配置路径别名，方便前端导入组件
+      "@": path.resolve(__dirname, "./src"),
     },
   },
-
-  // Vite options tailored for Tauri development and only applied in `tauri dev` or `tauri build`
-  //
-  // 1. prevent Vite from obscuring rust errors
   clearScreen: false,
-  // 2. tauri expects a fixed port, fail if that port is not available
   server: {
     port: 1420,
     strictPort: true,
-    host: host || "127.0.0.1",
+    host: host || false,
     hmr: host
-      ? {
-          protocol: "ws",
-          host,
-          port: 1421,
-        }
+      ? { protocol: "ws", host, port: 1421 }
       : undefined,
     watch: {
-      // 3. tell Vite to ignore watching `src-tauri`
+      // 避免 Vite 监听 Rust 源码目录，导致不必要的重启
       ignored: ["**/src-tauri/**"],
     },
   },

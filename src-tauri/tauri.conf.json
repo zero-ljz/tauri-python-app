@@ -4,24 +4,22 @@
   "version": "0.1.0",
   "identifier": "com.zero-.tauri-python-app",
   "build": {
-    "beforeDevCommand": "pnpm backend:setup && pnpm dev",
-    "devUrl": "http://127.0.0.1:1420",
-    "beforeBuildCommand": "pnpm backend:setup && pnpm build",
+    "beforeDevCommand": "pnpm dev",
+    "devUrl": "http://localhost:1420",
+    "beforeBuildCommand": "pnpm build",
     "frontendDist": "../dist"
   },
   "app": {
     "windows": [
       {
+        "label": "main",
         "title": "tauri-python-app",
-        "width": 1120,
-        "height": 760,
-        "minWidth": 720,
-        "minHeight": 520,
+        "width": 800,
+        "height": 600,
         "decorations": false,
+        "shadow": true,
         "resizable": true,
-        "maximizable": true,
-        "minimizable": true,
-        "closable": true
+        "center": true
       }
     ],
     "security": {
@@ -37,6 +35,9 @@
       "icons/128x128@2x.png",
       "icons/icon.icns",
       "icons/icon.ico"
+    ],
+    "externalBin": [
+      "bin/sidecar"
     ]
   }
 }

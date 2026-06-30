@@ -1,2 +1,0 @@
-"""Python sidecar runtime package."""
-
