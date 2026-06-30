@@ -36,6 +36,7 @@ class RpcStore {
   maxEntries = 200;    // 循环缓冲区最大长度，防止内存暴涨
   maxLogs = 500;
   private logIds = new Set<string>();
+  private _idCounter = 0;  // 单调递增计数器，保证 entry ID 全局唯一、无碰撞
 
   constructor() {
     makeAutoObservable(this);
@@ -43,7 +44,7 @@ class RpcStore {
 
   // 追加报文条目，若超过上限则自动丢弃最旧数据
   addEntry(entry: Omit<RpcEntry, "id">) {
-    const id = `${Date.now()}-${Math.random().toString(36).slice(2)}`;
+    const id = `entry-${++this._idCounter}`;
     this.entries.unshift({ id, ...entry });
     if (this.entries.length > this.maxEntries) {
       this.entries = this.entries.slice(0, this.maxEntries);

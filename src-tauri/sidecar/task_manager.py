@@ -158,7 +158,7 @@ class TaskRegistry:
         )
         self._tasks[task_id] = handle
 
-        loop = asyncio.get_event_loop()
+        loop = asyncio.get_running_loop()
 
         async def _wrapper():
             # 将阻塞函数投递到外部共享线程池

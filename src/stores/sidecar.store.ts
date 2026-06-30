@@ -120,6 +120,9 @@ class SidecarStore {
   private handleTaskProgress(payload: TaskProgress) {
     runInAction(() => {
       const existing = this.tasks.get(payload.task_id);
+      // task.progress 理论上晚于 task.status 到达，但极少情况下两者顺序可能颠倒。
+      // 此时用合理默认值（"running" / "unknown"）暂存进度条数据，
+      // 待 task.status 到达后会整体覆盖更新，属于预期的降级行为。
       this.tasks.set(payload.task_id, {
         taskId: payload.task_id,
         method: existing?.method ?? "unknown",

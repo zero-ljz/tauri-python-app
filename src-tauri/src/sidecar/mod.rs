@@ -16,6 +16,7 @@ use std::sync::{
 use std::time::{SystemTime, UNIX_EPOCH};
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::process::Command;
+use tokio::sync::Notify;
 
 const MAX_SIDECAR_LOGS: usize = 500;
 
@@ -72,6 +73,7 @@ fn emit_sidecar_log(
     let level = if stream == "stderr" {
         stderr_level(&message)
     } else {
+        // "process" stream 用于管道级错误（CommandEvent::Error），归类为 error 级别
         "error"
     };
 
@@ -202,6 +204,9 @@ pub struct SidecarManager {
     child: Option<ActiveProcess>,
     app: AppHandle,
     running: Arc<AtomicBool>,
+    /// 进程就绪通知器：当进程成功启动并设置 running=true 后触发 notify_one()，
+    /// 供 RpcClient 等外部组件精确唤醒，替代忙轮询。
+    ready_notify: Arc<Notify>,
     logs: SidecarLogBuffer,
     next_log_seq: Arc<AtomicU64>,
 }
@@ -212,6 +217,7 @@ impl SidecarManager {
             child: None,
             app,
             running: Arc::new(AtomicBool::new(false)),
+            ready_notify: Arc::new(Notify::new()),
             logs: Arc::new(StdMutex::new(VecDeque::with_capacity(MAX_SIDECAR_LOGS))),
             next_log_seq: Arc::new(AtomicU64::new(0)),
         }
@@ -221,6 +227,11 @@ impl SidecarManager {
         if running.swap(false, Ordering::SeqCst) {
             on_exit();
         }
+    }
+
+    /// 返回就绪通知器的共享引用，供 RpcClient 等外部组件监听进程启动事件。
+    pub fn ready_notify(&self) -> Arc<Notify> {
+        Arc::clone(&self.ready_notify)
     }
 
     fn resolve_dev_python() -> PathBuf {
@@ -248,6 +259,165 @@ impl SidecarManager {
             .unwrap_or_else(|| PathBuf::from("python"))
     }
 
+    /// 开发调试模式：直接调用本地 Python 解释器运行 sidecar 脚本。
+    async fn start_dev_process(
+        &mut self,
+        on_message: Arc<dyn Fn(Value) + Send + Sync>,
+        on_exit: Arc<dyn Fn() + Send + Sync>,
+    ) -> Result<()> {
+        let sidecar_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("sidecar");
+        let sidecar_script = sidecar_dir.join("main.py");
+        let python = Self::resolve_dev_python();
+        info!("[SidecarManager] 开发模式 Python: {}", python.display());
+
+        let mut cmd = Command::new(&python);
+        cmd.arg(&sidecar_script)
+            .current_dir(&sidecar_dir)
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped());
+
+        let mut child = cmd.spawn().map_err(|e| {
+            anyhow::anyhow!(
+                "无法拉起 Python 调试进程: python={}, script={}, error={}",
+                python.display(),
+                sidecar_script.display(),
+                e
+            )
+        })?;
+        let stdin = child
+            .stdin
+            .take()
+            .ok_or_else(|| anyhow::anyhow!("无法获取 Python stdin 管道"))?;
+        let stdout = child
+            .stdout
+            .take()
+            .ok_or_else(|| anyhow::anyhow!("无法获取 Python stdout 管道"))?;
+        let stderr = child
+            .stderr
+            .take()
+            .ok_or_else(|| anyhow::anyhow!("无法获取 Python stderr 管道"))?;
+
+        self.child = Some(ActiveProcess::Dev {
+            child: Box::new(child),
+            stdin,
+        });
+        self.running.store(true, Ordering::SeqCst);
+        // 通知等待方（如 RpcClient）：进程已就绪；notify_one 会存储 permit，
+        // 即使此时尚无等待者，之后第一个 notified().await 也会立即返回。
+        self.ready_notify.notify_one();
+
+        // 异步监听 stdout
+        let running = Arc::clone(&self.running);
+        let on_exit_stdout = Arc::clone(&on_exit);
+        let on_message_clone = Arc::clone(&on_message);
+        tokio::spawn(async move {
+            let mut reader = BufReader::new(stdout).lines();
+            while let Ok(Some(line)) = reader.next_line().await {
+                handle_stdout_line(&line, &on_message_clone, "dev");
+            }
+            info!("[SidecarManager] 开发模式 stdout 管道已关闭");
+            Self::notify_exit(&running, &on_exit_stdout);
+        });
+
+        // 异步监听 stderr 并直接打印日志
+        let app = self.app.clone();
+        let logs = Arc::clone(&self.logs);
+        let next_log_seq = Arc::clone(&self.next_log_seq);
+        tokio::spawn(async move {
+            let mut reader = BufReader::new(stderr).lines();
+            while let Ok(Some(line)) = reader.next_line().await {
+                info!("[sidecar stderr (dev)] {}", line);
+                emit_sidecar_log(&app, &logs, &next_log_seq, "dev", "stderr", line);
+            }
+        });
+
+        Ok(())
+    }
+
+    /// 生产发布模式：拉起 PyInstaller 打包好的 Sidecar 二进制程序。
+    async fn start_release_sidecar(
+        &mut self,
+        on_message: Arc<dyn Fn(Value) + Send + Sync>,
+        on_exit: Arc<dyn Fn() + Send + Sync>,
+    ) -> Result<()> {
+        let shell = self.app.shell();
+        let (mut rx, child) = shell
+            .sidecar("sidecar")
+            .map_err(|e| anyhow::anyhow!("创建 Sidecar 实例失败: {}", e))?
+            .spawn()
+            .map_err(|e| anyhow::anyhow!("启动 Sidecar 进程失败: {}", e))?;
+
+        self.child = Some(ActiveProcess::Sidecar(child));
+        self.running.store(true, Ordering::SeqCst);
+        self.ready_notify.notify_one();
+
+        let running = Arc::clone(&self.running);
+        let app = self.app.clone();
+        let logs = Arc::clone(&self.logs);
+        let next_log_seq = Arc::clone(&self.next_log_seq);
+        tokio::spawn(async move {
+            let mut stdout_buffer = Vec::new();
+            let mut stderr_buffer = Vec::new();
+            while let Some(event) = rx.recv().await {
+                match event {
+                    CommandEvent::Stdout(chunk) => {
+                        for line in take_complete_lines(&mut stdout_buffer, &chunk) {
+                            handle_stdout_line(&line, &on_message, "sidecar");
+                        }
+                    }
+                    CommandEvent::Stderr(chunk) => {
+                        for line in take_complete_lines(&mut stderr_buffer, &chunk) {
+                            info!("[sidecar stderr] {}", line);
+                            emit_sidecar_log(
+                                &app,
+                                &logs,
+                                &next_log_seq,
+                                "sidecar",
+                                "stderr",
+                                line,
+                            );
+                        }
+                    }
+                    CommandEvent::Error(e) => {
+                        error!("[SidecarManager] 进程管道错误: {}", e);
+                        emit_sidecar_log(
+                            &app,
+                            &logs,
+                            &next_log_seq,
+                            "sidecar",
+                            "process",
+                            e.to_string(),
+                        );
+                    }
+                    CommandEvent::Terminated(status) => {
+                        if let Some(line) = take_remaining_line(&mut stdout_buffer) {
+                            handle_stdout_line(&line, &on_message, "sidecar");
+                        }
+                        if let Some(line) = take_remaining_line(&mut stderr_buffer) {
+                            info!("[sidecar stderr] {}", line);
+                            emit_sidecar_log(
+                                &app,
+                                &logs,
+                                &next_log_seq,
+                                "sidecar",
+                                "stderr",
+                                line,
+                            );
+                        }
+                        info!("[SidecarManager] Sidecar 进程已退出: {:?}", status);
+                        Self::notify_exit(&running, &on_exit);
+                        break;
+                    }
+                    _ => {}
+                }
+            }
+            Self::notify_exit(&running, &on_exit);
+        });
+
+        Ok(())
+    }
+
     /// 启动 Python Sidecar 进程。
     pub async fn start(
         &mut self,
@@ -265,153 +435,12 @@ impl SidecarManager {
 
         // 根据编译条件判定当前是开发模式还是打包发布模式
         if cfg!(debug_assertions) {
-            // ─── 开发调试模式：秒级直连 python ───
             info!("[SidecarManager] 检测到开发模式，优先使用本地虚拟环境 Python 拉起脚本");
-
-            let sidecar_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("sidecar");
-            let sidecar_script = sidecar_dir.join("main.py");
-            let python = Self::resolve_dev_python();
-            info!("[SidecarManager] 开发模式 Python: {}", python.display());
-
-            let mut cmd = Command::new(&python);
-            cmd.arg(&sidecar_script)
-                .current_dir(&sidecar_dir)
-                .stdin(Stdio::piped())
-                .stdout(Stdio::piped())
-                .stderr(Stdio::piped());
-
-            let mut child = cmd.spawn().map_err(|e| {
-                anyhow::anyhow!(
-                    "无法拉起 Python 调试进程: python={}, script={}, error={}",
-                    python.display(),
-                    sidecar_script.display(),
-                    e
-                )
-            })?;
-            let stdin = child
-                .stdin
-                .take()
-                .ok_or_else(|| anyhow::anyhow!("无法获取 Python stdin 管道"))?;
-            let stdout = child
-                .stdout
-                .take()
-                .ok_or_else(|| anyhow::anyhow!("无法获取 Python stdout 管道"))?;
-            let stderr = child
-                .stderr
-                .take()
-                .ok_or_else(|| anyhow::anyhow!("无法获取 Python stderr 管道"))?;
-
-            self.child = Some(ActiveProcess::Dev {
-                child: Box::new(child),
-                stdin,
-            });
-            self.running.store(true, Ordering::SeqCst);
-
-            // 异步监听 stdout
-            let running = Arc::clone(&self.running);
-            let on_exit = Arc::clone(&on_exit);
-            let on_message = Arc::clone(&on_message);
-            tokio::spawn(async move {
-                let mut reader = BufReader::new(stdout).lines();
-                while let Ok(Some(line)) = reader.next_line().await {
-                    handle_stdout_line(&line, &on_message, "dev");
-                }
-                info!("[SidecarManager] 开发模式 stdout 管道已关闭");
-                Self::notify_exit(&running, &on_exit);
-            });
-
-            // 异步监听 stderr 并直接打印日志
-            let app = self.app.clone();
-            let logs = Arc::clone(&self.logs);
-            let next_log_seq = Arc::clone(&self.next_log_seq);
-            tokio::spawn(async move {
-                let mut reader = BufReader::new(stderr).lines();
-                while let Ok(Some(line)) = reader.next_line().await {
-                    info!("[sidecar stderr (dev)] {}", line);
-                    emit_sidecar_log(&app, &logs, &next_log_seq, "dev", "stderr", line);
-                }
-            });
+            self.start_dev_process(on_message, on_exit).await
         } else {
-            // ─── 生产发布模式：拉起编译打包好的 Sidecar 二进制 ───
             info!("[SidecarManager] 检测到发布模式，拉起打包的 Sidecar 二进制程序");
-
-            let shell = self.app.shell();
-            let (mut rx, child) = shell
-                .sidecar("sidecar")
-                .map_err(|e| anyhow::anyhow!("创建 Sidecar 实例失败: {}", e))?
-                .spawn()
-                .map_err(|e| anyhow::anyhow!("启动 Sidecar 进程失败: {}", e))?;
-
-            self.child = Some(ActiveProcess::Sidecar(child));
-            self.running.store(true, Ordering::SeqCst);
-
-            let running = Arc::clone(&self.running);
-            let on_exit = Arc::clone(&on_exit);
-            let on_message = Arc::clone(&on_message);
-            let app = self.app.clone();
-            let logs = Arc::clone(&self.logs);
-            let next_log_seq = Arc::clone(&self.next_log_seq);
-            tokio::spawn(async move {
-                let mut stdout_buffer = Vec::new();
-                let mut stderr_buffer = Vec::new();
-                while let Some(event) = rx.recv().await {
-                    match event {
-                        CommandEvent::Stdout(chunk) => {
-                            for line in take_complete_lines(&mut stdout_buffer, &chunk) {
-                                handle_stdout_line(&line, &on_message, "sidecar");
-                            }
-                        }
-                        CommandEvent::Stderr(chunk) => {
-                            for line in take_complete_lines(&mut stderr_buffer, &chunk) {
-                                info!("[sidecar stderr] {}", line);
-                                emit_sidecar_log(
-                                    &app,
-                                    &logs,
-                                    &next_log_seq,
-                                    "sidecar",
-                                    "stderr",
-                                    line,
-                                );
-                            }
-                        }
-                        CommandEvent::Error(e) => {
-                            error!("[SidecarManager] 进程管道错误: {}", e);
-                            emit_sidecar_log(
-                                &app,
-                                &logs,
-                                &next_log_seq,
-                                "sidecar",
-                                "process",
-                                e.to_string(),
-                            );
-                        }
-                        CommandEvent::Terminated(status) => {
-                            if let Some(line) = take_remaining_line(&mut stdout_buffer) {
-                                handle_stdout_line(&line, &on_message, "sidecar");
-                            }
-                            if let Some(line) = take_remaining_line(&mut stderr_buffer) {
-                                info!("[sidecar stderr] {}", line);
-                                emit_sidecar_log(
-                                    &app,
-                                    &logs,
-                                    &next_log_seq,
-                                    "sidecar",
-                                    "stderr",
-                                    line,
-                                );
-                            }
-                            info!("[SidecarManager] Sidecar 进程已退出: {:?}", status);
-                            Self::notify_exit(&running, &on_exit);
-                            break;
-                        }
-                        _ => {}
-                    }
-                }
-                Self::notify_exit(&running, &on_exit);
-            });
+            self.start_release_sidecar(on_message, on_exit).await
         }
-
-        Ok(())
     }
 
     /// 停止正在运行的 Python Sidecar 进程。

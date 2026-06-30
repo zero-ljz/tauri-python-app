@@ -134,6 +134,7 @@ def main() -> None:
     SCHEMA_PATH.write_text(
         json.dumps(schemas, ensure_ascii=False, indent=2) + "\n",
         encoding="utf-8",
+        newline="\n",
     )
 
     lines = [
@@ -150,7 +151,7 @@ def main() -> None:
         lines.append(emit_type(name, schema).rstrip())
         lines.append("")
 
-    OUTPUT_PATH.write_text("\n".join(lines).rstrip() + "\n", encoding="utf-8")
+    OUTPUT_PATH.write_text("\n".join(lines).rstrip() + "\n", encoding="utf-8", newline="\n")
     print(f"Generated {OUTPUT_PATH}")
     print(f"Generated {SCHEMA_PATH}")
 

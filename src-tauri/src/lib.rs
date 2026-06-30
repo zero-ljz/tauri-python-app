@@ -21,11 +21,13 @@ pub fn run() {
         .setup(|app| {
             let app_handle = app.handle().clone();
 
-            // 1. 初始化 Sidecar管理器
-            let sidecar = Arc::new(Mutex::new(SidecarManager::new(app_handle.clone())));
+            // 1. 初始化 Sidecar管理器，提前取出就绪通知器供 RpcClient 共享
+            let sidecar_mgr = SidecarManager::new(app_handle.clone());
+            let ready_notify = sidecar_mgr.ready_notify();
+            let sidecar = Arc::new(Mutex::new(sidecar_mgr));
 
-            // 2. 初始化 Rpc客户端（共享 Sidecar管理器用于输出写入）
-            let rpc = Arc::new(RpcClient::new(Arc::clone(&sidecar)));
+            // 2. 初始化 Rpc客户端（共享 Sidecar管理器用于输出写入，共享 Notify 替代忙轮询）
+            let rpc = Arc::new(RpcClient::new(Arc::clone(&sidecar), ready_notify));
 
             // 3. 初始化 消息网桥调度器
             let bridge = Arc::new(EventBridge::new(app_handle.clone(), Arc::clone(&rpc)));

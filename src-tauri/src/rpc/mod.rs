@@ -2,7 +2,8 @@ use anyhow::Result;
 use dashmap::DashMap;
 use serde_json::Value;
 use std::sync::Arc;
-use tokio::sync::{oneshot, Mutex};
+use std::time::Duration;
+use tokio::sync::{oneshot, Mutex, Notify};
 use uuid::Uuid;
 
 use crate::sidecar::SidecarManager;
@@ -18,13 +19,16 @@ struct PendingRequest {
 pub struct RpcClient {
     pending: Arc<DashMap<RequestId, PendingRequest>>,
     sidecar: Arc<Mutex<SidecarManager>>,
+    /// 与 SidecarManager 共享的就绪通知器，进程启动后精确唤醒，替代忙轮询
+    ready_notify: Arc<Notify>,
 }
 
 impl RpcClient {
-    pub fn new(sidecar: Arc<Mutex<SidecarManager>>) -> Self {
+    pub fn new(sidecar: Arc<Mutex<SidecarManager>>, ready_notify: Arc<Notify>) -> Self {
         Self {
             pending: Arc::new(DashMap::new()),
             sidecar,
+            ready_notify,
         }
     }
 
@@ -40,25 +44,25 @@ impl RpcClient {
         }
     }
 
-    /// 等待 Sidecar 进程启动完成。
+    /// 等待 Sidecar 进程启动完成（基于 Notify 精确唤醒，无忙轮询）。
+    ///
+    /// 使用 notify_one() 存储语义：即使进程在此函数进入之前已就绪，
+    /// permit 也已被保存，notified().await 会立即返回，不会遗漏事件。
+    ///
     /// ready 通知只用于能力表/UI 状态，不作为传输层硬门禁。
     async fn wait_until_process_running(&self) -> Result<()> {
-        let timeout = std::time::Duration::from_secs(10);
-        let started_at = std::time::Instant::now();
-
-        loop {
-            {
-                let sidecar = self.sidecar.lock().await;
-                if sidecar.is_running() {
-                    return Ok(());
-                }
+        // 快速路径：进程已就绪，无需等待
+        {
+            let sidecar = self.sidecar.lock().await;
+            if sidecar.is_running() {
+                return Ok(());
             }
+        }
 
-            if started_at.elapsed() >= timeout {
-                return Err(anyhow::anyhow!("Sidecar 进程尚未运行，RPC 请求已取消"));
-            }
-
-            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        // 慢路径：挂起等待就绪通知，带 10 秒超时兜底
+        match tokio::time::timeout(Duration::from_secs(10), self.ready_notify.notified()).await {
+            Ok(_) => Ok(()),
+            Err(_) => Err(anyhow::anyhow!("Sidecar 进程启动超时，RPC 请求已取消")),
         }
     }
 
@@ -87,7 +91,7 @@ impl RpcClient {
         }
 
         // 挂起等待响应，设置 30 秒超时
-        match tokio::time::timeout(std::time::Duration::from_secs(30), rx).await {
+        match tokio::time::timeout(Duration::from_secs(30), rx).await {
             Ok(Ok(result)) => result,
             Ok(Err(_)) => Err(anyhow::anyhow!("RPC 通道意外关闭")),
             Err(_) => {
