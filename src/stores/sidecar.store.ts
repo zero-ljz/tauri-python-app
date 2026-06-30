@@ -1,28 +1,62 @@
 import { makeAutoObservable, runInAction } from "mobx";
 import { sidecarStatus, listenSidecar } from "@/lib/tauri-rpc";
 import type { UnlistenFn } from "@tauri-apps/api/event";
+import type {
+  SidecarReadyPayload,
+  TaskProgress,
+  TaskResult,
+  TaskStatus,
+} from "@/types/generated";
 
 // 定义 Sidecar 连接状态类型
 export type SidecarState = "unknown" | "running" | "stopped" | "error";
 
+export interface TrackedTask {
+  taskId: string;
+  method: string;
+  status: TaskStatus["status"];
+  kind?: TaskStatus["kind"];
+  cancellable?: boolean | null;
+  cancelRequested: boolean;
+  progress?: number | null;
+  message?: string | null;
+  result?: unknown;
+  error?: string | null;
+}
+
 // Sidecar 进程状态 Store
 class SidecarStore {
   state: SidecarState = "unknown";
-  private _unlisten: UnlistenFn | null = null;
+  version: string | null = null;
+  capabilities: string[] = [];
+  tasks = new Map<string, TrackedTask>();
+  lastError: string | null = null;
+  private _unlisteners: UnlistenFn[] = [];
 
   constructor() {
-    makeAutoObservable(this);
-    this._init();
+    makeAutoObservable(this, {}, { autoBind: true });
+    void this._init();
   }
 
   // 初始化监听以及状态轮询
   private async _init() {
-    // 监听 Python 端发送的 sidecar.ready 就绪事件
-    this._unlisten = await listenSidecar("sidecar.ready", () => {
+    try {
+      const unlisteners = await Promise.all([
+        listenSidecar<SidecarReadyPayload>("sidecar.ready", this.handleReady),
+        listenSidecar<{ reason?: string }>("sidecar.exited", this.handleExited),
+        listenSidecar<TaskStatus>("task.status", this.handleTaskStatus),
+        listenSidecar<TaskProgress>("task.progress", this.handleTaskProgress),
+        listenSidecar<TaskResult>("task.result", this.handleTaskResult),
+      ]);
       runInAction(() => {
-        this.state = "running";
+        this._unlisteners = unlisteners;
       });
-    });
+    } catch (error) {
+      runInAction(() => {
+        this.state = "error";
+        this.lastError = error instanceof Error ? error.message : String(error);
+      });
+    }
     
     // 轮询检查进程状态
     try {
@@ -39,6 +73,77 @@ class SidecarStore {
     }
   }
 
+  private handleReady(payload: SidecarReadyPayload) {
+    runInAction(() => {
+      this.state = "running";
+      this.version = payload.version;
+      this.capabilities = payload.capabilities ?? [];
+      this.lastError = null;
+    });
+  }
+
+  private handleExited(payload: { reason?: string }) {
+    runInAction(() => {
+      this.state = "stopped";
+      this.lastError = payload.reason ?? null;
+      this.capabilities = [];
+    });
+  }
+
+  private handleTaskStatus(payload: TaskStatus) {
+    runInAction(() => {
+      const existing = this.tasks.get(payload.task_id);
+      this.tasks.set(payload.task_id, {
+        taskId: payload.task_id,
+        method: payload.method,
+        status: payload.status,
+        kind: payload.kind ?? existing?.kind,
+        cancellable: payload.cancellable ?? existing?.cancellable,
+        cancelRequested: payload.cancel_requested ?? existing?.cancelRequested ?? false,
+        progress: payload.progress ?? existing?.progress,
+        message: payload.message ?? existing?.message,
+        result: existing?.result,
+        error: existing?.error,
+      });
+    });
+  }
+
+  private handleTaskProgress(payload: TaskProgress) {
+    runInAction(() => {
+      const existing = this.tasks.get(payload.task_id);
+      this.tasks.set(payload.task_id, {
+        taskId: payload.task_id,
+        method: existing?.method ?? "unknown",
+        status: existing?.status ?? "running",
+        kind: existing?.kind,
+        cancellable: existing?.cancellable,
+        cancelRequested: existing?.cancelRequested ?? false,
+        progress: payload.progress,
+        message: payload.message ?? existing?.message,
+        result: existing?.result,
+        error: existing?.error,
+      });
+    });
+  }
+
+  private handleTaskResult(payload: TaskResult) {
+    runInAction(() => {
+      const existing = this.tasks.get(payload.task_id);
+      this.tasks.set(payload.task_id, {
+        taskId: payload.task_id,
+        method: payload.method,
+        status: payload.error ? "error" : "done",
+        kind: existing?.kind,
+        cancellable: existing?.cancellable,
+        cancelRequested: existing?.cancelRequested ?? false,
+        progress: payload.error ? existing?.progress : 1,
+        message: existing?.message,
+        result: payload.result,
+        error: payload.error,
+      });
+    });
+  }
+
   // 动态修改状态的方法
   setState(s: SidecarState) {
     this.state = s;
@@ -46,7 +151,10 @@ class SidecarStore {
 
   // 组件销毁或断开连接时取消监听
   dispose() {
-    this._unlisten?.();
+    for (const unlisten of this._unlisteners) {
+      unlisten();
+    }
+    this._unlisteners = [];
   }
 }
 

@@ -1,8 +1,14 @@
 import inspect
+import asyncio
 import logging
 from typing import Callable, Any, Dict
 
 logger = logging.getLogger(__name__)
+
+class RpcMethodNotFoundError(ValueError):
+    """JSON-RPC 方法未注册错误。"""
+    pass
+
 
 class RpcDispatcher:
     """
@@ -31,7 +37,7 @@ class RpcDispatcher:
         根据注册的方法名，动态匹配依赖并反射调用底层函数，兼容同步与异步协程。
         """
         if method not in self.handlers:
-            raise ValueError(f"RPC 方法 {method!r} 未在 Sidecar 路由表中注册")
+            raise RpcMethodNotFoundError(f"RPC 方法 {method!r} 未在 Sidecar 路由表中注册")
 
         handler = self.handlers[method]
         sig = inspect.signature(handler)
@@ -49,7 +55,7 @@ class RpcDispatcher:
         if inspect.iscoroutinefunction(handler):
             return await handler(**bound_args)
         else:
-            return handler(**bound_args)
+            return await asyncio.to_thread(handler, **bound_args)
 
 # 全局共享的 RPC 调度派发器单例
 dispatcher = RpcDispatcher()

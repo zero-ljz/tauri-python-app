@@ -99,13 +99,10 @@ const SendPanel = observer(() => {
       return;
     }
 
-    const finish = rpcStore.trackRequest(method, parsedParams);
     try {
-      const result = await rpcRequest(method, parsedParams);
-      finish(result);
+      await rpcRequest(method, parsedParams);
     } catch (e) {
       const msg = e instanceof Error ? e.message : String(e);
-      finish(undefined, msg);
       setLastError(msg);
     } finally {
       setLoading(false);
@@ -131,7 +128,7 @@ const SendPanel = observer(() => {
           value={params}
           onChange={(e) => setParams(e.target.value)}
           rows={4}
-          className="selectable flex w-full rounded-md border border-[hsl(var(--input))] bg-transparent px-3 py-2 text-xs font-mono shadow-sm focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-[hsl(var(--ring))] resize-none"
+          className="selectable flex w-full resize-none rounded-md border border-input bg-background px-3 py-2 font-mono text-xs text-foreground shadow-sm focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
         />
       </div>
       {lastError && (

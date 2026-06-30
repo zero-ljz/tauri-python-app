@@ -1,4 +1,5 @@
 import asyncio
+import time
 from dispatcher import dispatcher
 from task_manager import TaskRegistry
 
@@ -13,8 +14,7 @@ async def handle_task_cancel(params: dict, registry: TaskRegistry) -> dict:
     if not isinstance(params, dict) or "task_id" not in params:
         raise ValueError("params must have 'task_id'")
     task_id = params["task_id"]
-    cancelled = await registry.cancel(task_id)
-    return {"cancelled": cancelled, "task_id": task_id}
+    return await registry.cancel(task_id)
 
 @dispatcher.register("task.long")
 async def handle_long_task(registry: TaskRegistry) -> dict:
@@ -28,5 +28,18 @@ async def handle_long_task(registry: TaskRegistry) -> dict:
             await registry.send_progress(task_id, i / 5, f"step {i}/5")
         return {"done": True}
 
-    task_id = registry.submit_async("tasks.long_task", _work)
+    task_id = registry.submit_async("task.long", _work)
+    return {"task_id": task_id}
+
+@dispatcher.register("task.blocking")
+async def handle_blocking_task(registry: TaskRegistry) -> dict:
+    """
+    Example: spawn a blocking worker thread task.
+    The task can be observed, but cannot be force-cancelled once running.
+    """
+    def _work():
+        time.sleep(5)
+        return {"done": True, "kind": "blocking"}
+
+    task_id = registry.submit_blocking("task.blocking", _work)
     return {"task_id": task_id}

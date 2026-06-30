@@ -1,5 +1,10 @@
 import { invoke } from "@tauri-apps/api/core";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
+import { rpcStore } from "@/stores/rpc.store";
+
+function errorMessage(error: unknown): string {
+  return error instanceof Error ? error.message : String(error);
+}
 
 /**
  * 通用的 JSON-RPC 2.0 请求代理（前端 -> Rust -> Python Sidecar）
@@ -8,7 +13,15 @@ export async function rpcRequest<T = unknown>(
   method: string,
   params?: unknown
 ): Promise<T> {
-  return invoke<T>("rpc_request", { method, params: params ?? null });
+  const finish = rpcStore.trackRequest(method, params ?? null);
+  try {
+    const result = await invoke<T>("rpc_request", { method, params: params ?? null });
+    finish(result);
+    return result;
+  } catch (error) {
+    finish(undefined, errorMessage(error));
+    throw error;
+  }
 }
 
 /**
@@ -26,7 +39,10 @@ export function listenSidecar<T = unknown>(
   method: string,
   handler: (payload: T) => void
 ): Promise<UnlistenFn> {
-  return listen<T>(`sidecar://${method}`, (event) => handler(event.payload));
+  return listen<T>(`sidecar://${method}`, (event) => {
+    rpcStore.addNotification(method, event.payload);
+    handler(event.payload);
+  });
 }
 
 // ─── 无边框窗口控制 API ───────────────────────────────────────────────────────

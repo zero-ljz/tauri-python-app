@@ -27,15 +27,17 @@ impl EventBridge {
 
         // 判定是否是带 ID 的响应报文 (Response)
         if let Some(id) = msg.get("id").and_then(|v| v.as_str()) {
-            if let Some(result) = msg.get("result") {
-                debug!("[EventBridge] 收到正常响应: id={}, result={:?}", id, result);
-                self.rpc.resolve_response(id, Ok(result.clone()));
-            } else if let Some(error) = msg.get("error") {
+            if let Some(error) = msg.get("error") {
                 let err_msg = error.get("message")
                     .and_then(|v| v.as_str())
                     .unwrap_or("未知 RPC 响应内部错误");
                 debug!("[EventBridge] 收到错误响应: id={}, message={}", id, err_msg);
                 self.rpc.resolve_response(id, Err(anyhow::anyhow!("{}", err_msg)));
+            } else if let Some(result) = msg.get("result") {
+                debug!("[EventBridge] 收到正常响应: id={}, result={:?}", id, result);
+                self.rpc.resolve_response(id, Ok(result.clone()));
+            } else {
+                warn!("[EventBridge] 响应报文缺少 result/error 字段: {:?}", msg);
             }
             return;
         }

@@ -11,7 +11,7 @@ import sys
 import logging
 from typing import Any, Optional
 
-from models import RpcRequest, RpcResponse, RpcNotification, RpcError
+from models import RpcNotification, RpcError
 
 logger = logging.getLogger(__name__)
 
@@ -29,17 +29,21 @@ async def write_message(obj: dict[str, Any]) -> None:
 
 async def send_response(id: Optional[str], result: Any) -> None:
     """向 Rust 发送成功应答响应报文。"""
-    resp = RpcResponse(id=id, result=result)
-    await write_message(resp.model_dump(exclude_none=False))
+    await write_message({
+        "jsonrpc": "2.0",
+        "id": id,
+        "result": result,
+    })
 
 
 async def send_error(id: Optional[str], code: int, message: str, data: Any = None) -> None:
     """向 Rust 发送失败应答响应报文。"""
-    resp = RpcResponse(
-        id=id,
-        error=RpcError(code=code, message=message, data=data),
-    )
-    await write_message(resp.model_dump(exclude_none=False))
+    error = RpcError(code=code, message=message, data=data).model_dump(exclude_none=True)
+    await write_message({
+        "jsonrpc": "2.0",
+        "id": id,
+        "error": error,
+    })
 
 
 async def send_notification(method: str, params: Any = None) -> None:
@@ -53,19 +57,20 @@ async def stdin_reader(queue: asyncio.Queue[dict[str, Any]]) -> None:
     流式监听并切分 stdin 管道，将解析合规的 JSON 报文推入接收队列。
     若读到管道关闭事件（EOF）则退出。
     """
-    loop = asyncio.get_event_loop()
-    reader = asyncio.StreamReader()
-    protocol = asyncio.StreamReaderProtocol(reader)
-    await loop.connect_read_pipe(lambda: protocol, sys.stdin.buffer)
-
     logger.debug("标准输入流读取监听开启")
     while True:
         try:
-            line_bytes = await reader.readline()
+            # Windows 的 ProactorEventLoop 对标准输入管道支持不稳定，使用线程读取
+            # 可以避开 connect_read_pipe 在 PyInstaller/管道环境中的 WinError 6。
+            line_bytes = await asyncio.to_thread(sys.stdin.buffer.readline)
             if not line_bytes:  # 读到 EOF，代表父进程已被关闭或终止
                 logger.info("标准输入流检测到 EOF — 开启安全退出流程")
                 break
-            line = line_bytes.decode("utf-8").strip()
+            try:
+                line = line_bytes.decode("utf-8").strip()
+            except UnicodeDecodeError as e:
+                logger.warning("丢弃非 UTF-8 编码报文: %s", e)
+                continue
             if not line:
                 continue
             try:

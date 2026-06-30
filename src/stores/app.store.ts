@@ -7,10 +7,16 @@ class AppStore {
   theme: Theme = "system"; // 主题配置：light/dark/system
   preferencesOpen = false; // 偏好设置弹窗控制
   debugPanelOpen = false;  // 调试面板显示控制
+  private _systemThemeQuery = window.matchMedia("(prefers-color-scheme: dark)");
 
   constructor() {
     makeAutoObservable(this);
     this._loadTheme();
+    this._systemThemeQuery.addEventListener("change", () => {
+      if (this.theme === "system") {
+        this._applyTheme();
+      }
+    });
   }
 
   // 从本地存储加载并应用主题
@@ -31,15 +37,19 @@ class AppStore {
   private _applyTheme() {
     const root = document.documentElement;
     root.classList.remove("dark", "light");
+    let resolvedTheme: "dark" | "light";
+
     if (this.theme === "dark") {
-      root.classList.add("dark");
+      resolvedTheme = "dark";
     } else if (this.theme === "light") {
-      root.classList.add("light");
+      resolvedTheme = "light";
     } else {
       // 如果是跟随系统，判断系统的深浅色模式
-      const prefersDark = window.matchMedia("(prefers-color-scheme: dark)").matches;
-      root.classList.add(prefersDark ? "dark" : "light");
+      resolvedTheme = this._systemThemeQuery.matches ? "dark" : "light";
     }
+
+    root.classList.add(resolvedTheme);
+    root.style.colorScheme = resolvedTheme;
   }
 
   // 打开偏好设置

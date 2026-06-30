@@ -3,14 +3,14 @@ import { AppMenu } from "./AppMenu";
 import { WindowControls } from "./WindowControls";
 import { windowMaximize } from "@/lib/tauri-rpc";
 
-// 极简自定义标题栏组件（保持纯白色背景 bg-white）
+// 极简自定义标题栏组件
 export const TitleBar = observer(() => {
   // 双击标题栏最大化或还原窗口
   const handleDoubleClick = () => windowMaximize();
 
   return (
     <div
-      className="flex h-8 shrink-0 items-center justify-between border-b bg-white select-none pr-0 pl-0"
+      className="flex h-8 shrink-0 items-center justify-between border-b border-border bg-background text-foreground select-none pr-0 pl-0"
       onDoubleClick={handleDoubleClick}
     >
       {/* ── 左边最外边缘：微小的可拖动空白边距（w-2） ── */}

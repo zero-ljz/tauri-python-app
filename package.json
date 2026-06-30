@@ -5,7 +5,8 @@
   "type": "module",
   "scripts": {
     "dev": "vite",
-    "build": "tsc && vite build",
+    "gen:types": "python scripts/gen_types.py",
+    "build": "pnpm gen:types && tsc && vite build",
     "preview": "vite preview",
     "tauri": "tauri"
   },

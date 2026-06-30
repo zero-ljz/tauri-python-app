@@ -5,6 +5,7 @@ Pydantic 数据模型定义。
 from __future__ import annotations
 from typing import Any, Literal, Optional, Union
 from pydantic import BaseModel, Field
+from pydantic import RootModel
 
 
 # ─── JSON-RPC 2.0 基础协议消息模型 ─────────────────────────────────────────────
@@ -24,12 +25,23 @@ class RpcError(BaseModel):
     data: Any = None
 
 
-class RpcResponse(BaseModel):
-    """向 Rust (stdout) 反馈的 JSON-RPC 2.0 响应实体"""
+class RpcSuccessResponse(BaseModel):
+    """向 Rust (stdout) 反馈的 JSON-RPC 2.0 成功响应实体"""
     jsonrpc: Literal["2.0"] = "2.0"
     id: Optional[str] = None
-    result: Any = None
-    error: Optional[RpcError] = None
+    result: Any
+
+
+class RpcErrorResponse(BaseModel):
+    """向 Rust (stdout) 反馈的 JSON-RPC 2.0 错误响应实体"""
+    jsonrpc: Literal["2.0"] = "2.0"
+    id: Optional[str] = None
+    error: RpcError
+
+
+class RpcResponse(RootModel[Union[RpcSuccessResponse, RpcErrorResponse]]):
+    """JSON-RPC 2.0 响应联合类型：成功响应与错误响应互斥"""
+    pass
 
 
 class RpcNotification(BaseModel):
@@ -41,11 +53,17 @@ class RpcNotification(BaseModel):
 
 # ─── 任务调度机制专属数据负载模型 ───────────────────────────────────────────────
 
+TaskKind = Literal["async", "blocking"]
+
+
 class TaskStatus(BaseModel):
     """任务运行时的状态快照模型"""
     task_id: str
     method: str
     status: Literal["pending", "running", "done", "error", "cancelled"]
+    kind: Optional[TaskKind] = None
+    cancellable: Optional[bool] = None
+    cancel_requested: bool = False
     progress: Optional[float] = Field(None, ge=0.0, le=1.0)
     message: Optional[str] = None
 
@@ -63,6 +81,23 @@ class TaskProgress(BaseModel):
     task_id: str
     progress: float = Field(ge=0.0, le=1.0)
     message: Optional[str] = None
+
+
+class TaskSummary(BaseModel):
+    """任务列表查询时返回的活动任务摘要"""
+    task_id: str
+    method: str
+    status: Literal["pending", "running", "done", "error", "cancelled"]
+    kind: TaskKind
+    cancellable: bool
+    cancel_requested: bool = False
+
+
+class TaskCancelResult(BaseModel):
+    """任务取消请求的语义化结果"""
+    task_id: str
+    cancelled: bool
+    reason: Optional[str] = None
 
 
 # ─── 广播类状态通知数据模型 ─────────────────────────────────────────────────────

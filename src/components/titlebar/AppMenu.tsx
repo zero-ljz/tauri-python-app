@@ -10,6 +10,7 @@ import {
   MenubarTrigger,
 } from "@/components/ui/menubar";
 import { windowClose } from "@/lib/tauri-rpc";
+import { appStore } from "@/stores/app.store";
 
 // 具有 Windows 原生体验且支持平铺自适应折叠的菜单栏组件
 export const AppMenu = observer(() => {
@@ -44,6 +45,10 @@ export const AppMenu = observer(() => {
             tauri-python-app
           </div>
           <MenubarSeparator />
+          <MenubarItem onClick={() => appStore.openPreferences()} className="cursor-pointer">
+            偏好设置
+          </MenubarItem>
+          <MenubarSeparator />
           <MenubarItem onClick={handleExit} className="text-destructive focus:bg-destructive/10 focus:text-destructive cursor-pointer">
             退出
           </MenubarItem>
@@ -72,6 +77,10 @@ export const AppMenu = observer(() => {
           <MenubarContent className="mt-[-1px]">
             <MenubarItem className="cursor-pointer">重新加载</MenubarItem>
             <MenubarItem className="cursor-pointer">切换全屏</MenubarItem>
+            <MenubarSeparator />
+            <MenubarItem onClick={() => appStore.toggleDebugPanel()} className="cursor-pointer">
+              {appStore.debugPanelOpen ? "隐藏 IPC 调试面板" : "显示 IPC 调试面板"}
+            </MenubarItem>
           </MenubarContent>
         </MenubarMenu>
       )}
@@ -118,6 +127,9 @@ export const AppMenu = observer(() => {
                 </div>
                 <MenubarItem className="cursor-pointer">重新加载</MenubarItem>
                 <MenubarItem className="cursor-pointer">切换全屏</MenubarItem>
+                <MenubarItem onClick={() => appStore.toggleDebugPanel()} className="cursor-pointer">
+                  {appStore.debugPanelOpen ? "隐藏 IPC 调试面板" : "显示 IPC 调试面板"}
+                </MenubarItem>
               </>
             )}
 

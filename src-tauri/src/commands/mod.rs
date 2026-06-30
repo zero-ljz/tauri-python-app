@@ -1,5 +1,5 @@
 use std::sync::Arc;
-use tauri::{command, State, Window};
+use tauri::{command, AppHandle, Emitter, State, Window};
 use tokio::sync::Mutex;
 use serde_json::Value;
 use anyhow::Result;
@@ -22,9 +22,18 @@ pub async fn sidecar_status(state: State<'_, Arc<AppState>>) -> Result<bool, Str
 }
 
 #[command]
-pub async fn sidecar_stop(state: State<'_, Arc<AppState>>) -> Result<(), String> {
+pub async fn sidecar_stop(
+    state: State<'_, Arc<AppState>>,
+    app: AppHandle,
+) -> Result<(), String> {
     let mut sidecar = state.sidecar.lock().await;
-    sidecar.stop().map_err(|e| e.to_string())
+    sidecar.stop().map_err(|e| e.to_string())?;
+    state.rpc.mark_unready("Sidecar 进程已手动停止");
+    let _ = app.emit(
+        "sidecar://sidecar.exited",
+        serde_json::json!({ "reason": "manual stop" }),
+    );
+    Ok(())
 }
 
 // ─── RPC 转发命令代理 ────────────────────────────────────────────────────────
