@@ -21,15 +21,18 @@ pub fn run() {
         .setup(|app| {
             let app_handle = app.handle().clone();
 
-            // 1. 初始化 Sidecar管理器，提前取出就绪通知器供 RpcClient 共享
+            // 1. 初始化 SidecarManager，提前取出共享写入通道和就绪订阅端
+            //    Fix 2：stdin_tx 与 SidecarManager 锁完全解耦，RpcClient 直接持有
+            //    Fix 1：ready_rx 为 watch::Receiver，多 waiter 并发等待时全部同时唤醒
             let sidecar_mgr = SidecarManager::new(app_handle.clone());
-            let ready_notify = sidecar_mgr.ready_notify();
+            let stdin_tx = sidecar_mgr.stdin_sender(); // StdinTx（Arc<StdMutex<Option<Sender>>>）
+            let ready_rx = sidecar_mgr.ready_watch();  // watch::Receiver<bool>
             let sidecar = Arc::new(Mutex::new(sidecar_mgr));
 
-            // 2. 初始化 Rpc客户端（共享 Sidecar管理器用于输出写入，共享 Notify 替代忙轮询）
-            let rpc = Arc::new(RpcClient::new(Arc::clone(&sidecar), ready_notify));
+            // 2. 初始化 RpcClient（不再依赖 SidecarManager 引用）
+            let rpc = Arc::new(RpcClient::new(stdin_tx, ready_rx));
 
-            // 3. 初始化 消息网桥调度器
+            // 3. 初始化消息网桥调度器
             let bridge = Arc::new(EventBridge::new(app_handle.clone(), Arc::clone(&rpc)));
 
             // 4. 将应用状态注册托管到 Tauri Context 中
@@ -49,6 +52,7 @@ pub fn run() {
                     bridge_clone.handle_message(msg);
                 });
                 let on_exit: Arc<dyn Fn() + Send + Sync> = Arc::new(move || {
+                    // mark_unready 同时清空 pending 请求和 stdin_tx（Fix 2）
                     rpc_on_exit.mark_unready("Sidecar 进程已退出");
                     let _ = app_on_exit.emit(
                         "sidecar://sidecar.exited",

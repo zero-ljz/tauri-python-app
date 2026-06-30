@@ -37,7 +37,13 @@ class SidecarStore {
 
   constructor() {
     makeAutoObservable(this, {}, { autoBind: true });
-    void this._init();
+    // Fix 4: 不在构造函数中自动调用 _init()，避免模块加载时过早触发 Tauri IPC 调用。
+    // 请在应用挂载完成后显式调用 sidecarStore.init()。
+  }
+
+  // 显式初始化入口（Fix 4）：由 main.tsx 在 React 挂载后调用
+  async init(): Promise<void> {
+    await this._init();
   }
 
   // 初始化监听以及状态轮询

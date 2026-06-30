@@ -16,9 +16,14 @@ use std::sync::{
 use std::time::{SystemTime, UNIX_EPOCH};
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::process::Command;
-use tokio::sync::Notify;
+use tokio::sync::{mpsc, watch};
 
 const MAX_SIDECAR_LOGS: usize = 500;
+
+/// stdin 消息发送端的共享类型别名。
+/// - Option::None  → 进程未运行，写入会立即报错
+/// - Option::Some  → 进程运行中，消息投入队列后由 writer 任务异步写入
+pub type StdinTx = Arc<StdMutex<Option<mpsc::Sender<Vec<u8>>>>>;
 
 #[derive(Clone, Serialize)]
 pub struct SidecarLogPayload {
@@ -149,49 +154,33 @@ fn handle_stdout_line(line: &str, on_message: &Arc<dyn Fn(Value) + Send + Sync>,
     }
 }
 
-/// 抽象表示当前运行中的 Sidecar 进程，支持开发模式直接执行和生产模式 Sidecar 二进制执行
+/// Fix 2：stdin 写入已从 ActiveProcess 中解耦，由独立的 writer 任务负责；
+/// ActiveProcess 仅保留进程句柄用于 kill 操作。
 pub enum ActiveProcess {
     /// 生产发布模式：Tauri 托管的二进制 Sidecar
-    Sidecar(CommandChild),
-    /// 本地开发模式：直连系统的 Python 解释器
+    /// CommandChild::write 取 &mut self，kill 取 self，用 Arc<StdMutex<>> 共享给 writer 任务
+    Sidecar(Arc<StdMutex<CommandChild>>),
+    /// 本地开发模式：直连系统的 Python 解释器（stdin 已被 writer 任务独占消费）
     Dev {
         child: Box<tokio::process::Child>,
-        stdin: tokio::process::ChildStdin,
     },
 }
 
 impl ActiveProcess {
-    /// 统一抽象向标准输入流（stdin）写入字节的方法
-    pub async fn write(&mut self, bytes: &[u8]) -> Result<()> {
-        match self {
-            ActiveProcess::Sidecar(child) => {
-                child
-                    .write(bytes)
-                    .map_err(|e| anyhow::anyhow!("Sidecar stdin 写入失败: {}", e))?;
-            }
-            ActiveProcess::Dev { stdin, .. } => {
-                stdin
-                    .write_all(bytes)
-                    .await
-                    .map_err(|e| anyhow::anyhow!("Dev stdin 写入失败: {}", e))?;
-                stdin
-                    .flush()
-                    .await
-                    .map_err(|e| anyhow::anyhow!("Dev stdin 刷新失败: {}", e))?;
-            }
-        }
-        Ok(())
-    }
-
     /// 统一抽象安全终止进程的方法
     pub fn kill(self) -> Result<()> {
         match self {
-            ActiveProcess::Sidecar(child) => {
+            ActiveProcess::Sidecar(child_arc) => {
+                // 取出 CommandChild 所有权（Mutex 消费）再 kill
+                let child = Arc::try_unwrap(child_arc)
+                    .map_err(|_| anyhow::anyhow!("CommandChild Arc 仍有其他持有者，无法 kill"))?
+                    .into_inner()
+                    .map_err(|_| anyhow::anyhow!("CommandChild Mutex 已中毒"))?;
                 child
                     .kill()
                     .map_err(|e| anyhow::anyhow!("终止 Sidecar 失败: {}", e))?;
             }
-            ActiveProcess::Dev { mut child, .. } => {
+            ActiveProcess::Dev { mut child } => {
                 let _ = child.start_kill();
             }
         }
@@ -200,38 +189,67 @@ impl ActiveProcess {
 }
 
 /// 负责管理 Python Sidecar 进程的生命周期。
+///
+/// Fix 1：就绪通知从 `Notify`（单 permit，并发唤醒存在丢失）升级为
+///         `watch::channel`（所有 waiter 同时广播唤醒）。
+///
+/// Fix 2：stdin 写入通道（`stdin_tx`）以 `Arc<StdMutex<Option<>>>` 独立暴露，
+///         使 `RpcClient` 直接持有并写入，完全不再需要锁住整个 `SidecarManager`。
 pub struct SidecarManager {
     child: Option<ActiveProcess>,
     app: AppHandle,
     running: Arc<AtomicBool>,
-    /// 进程就绪通知器：当进程成功启动并设置 running=true 后触发 notify_one()，
-    /// 供 RpcClient 等外部组件精确唤醒，替代忙轮询。
-    ready_notify: Arc<Notify>,
+    /// 进程就绪广播发送端：发送 true = 就绪，false = 退出/停止。
+    /// 包裹在 Arc 中以便背景任务持有引用。
+    ready_tx: Arc<watch::Sender<bool>>,
     logs: SidecarLogBuffer,
     next_log_seq: Arc<AtomicU64>,
+    /// 独立 stdin 写入通道：与 SidecarManager 锁解耦，RpcClient 可独立写入。
+    stdin_tx: StdinTx,
 }
 
 impl SidecarManager {
     pub fn new(app: AppHandle) -> Self {
+        let (ready_tx, _initial_rx) = watch::channel(false);
         Self {
             child: None,
             app,
             running: Arc::new(AtomicBool::new(false)),
-            ready_notify: Arc::new(Notify::new()),
+            ready_tx: Arc::new(ready_tx),
             logs: Arc::new(StdMutex::new(VecDeque::with_capacity(MAX_SIDECAR_LOGS))),
             next_log_seq: Arc::new(AtomicU64::new(0)),
+            stdin_tx: Arc::new(StdMutex::new(None)),
         }
     }
 
-    fn notify_exit(running: &Arc<AtomicBool>, on_exit: &Arc<dyn Fn() + Send + Sync>) {
+    /// 返回就绪状态 watch 订阅端，供 RpcClient 等外部组件监听进程启动/退出事件。
+    /// 每次调用返回独立订阅端，多个 waiter 并发等待时全部同时唤醒（Fix 1 核心）。
+    pub fn ready_watch(&self) -> watch::Receiver<bool> {
+        self.ready_tx.subscribe()
+    }
+
+    /// 返回 stdin 写入通道的共享引用，供 RpcClient 直接写入而无需锁住 SidecarManager（Fix 2 核心）。
+    pub fn stdin_sender(&self) -> StdinTx {
+        Arc::clone(&self.stdin_tx)
+    }
+
+    /// 进程退出时的统一清理回调（幂等：仅在 running 从 true→false 时触发一次）。
+    ///
+    /// Fix 1：同步广播 ready = false，新的 waiter 立即感知进程不可用。
+    /// Fix 2：清空 stdin_tx，writer 任务的 rx 端因 sender drop 而自动退出。
+    fn notify_exit(
+        running: &Arc<AtomicBool>,
+        ready_tx: &Arc<watch::Sender<bool>>,
+        stdin_tx: &StdinTx,
+        on_exit: &Arc<dyn Fn() + Send + Sync>,
+    ) {
         if running.swap(false, Ordering::SeqCst) {
+            let _ = ready_tx.send(false);
+            if let Ok(mut g) = stdin_tx.lock() {
+                *g = None;
+            }
             on_exit();
         }
-    }
-
-    /// 返回就绪通知器的共享引用，供 RpcClient 等外部组件监听进程启动事件。
-    pub fn ready_notify(&self) -> Arc<Notify> {
-        Arc::clone(&self.ready_notify)
     }
 
     fn resolve_dev_python() -> PathBuf {
@@ -260,6 +278,9 @@ impl SidecarManager {
     }
 
     /// 开发调试模式：直接调用本地 Python 解释器运行 sidecar 脚本。
+    ///
+    /// Fix 2：stdin 在此处被取出，交由独立的 writer 任务持有，不再存入 ActiveProcess。
+    /// Fix 3：stdout 和 stderr 任务关闭时均触发 notify_exit（幂等），提高进程退出检测可靠性。
     async fn start_dev_process(
         &mut self,
         on_message: Arc<dyn Fn(Value) + Send + Sync>,
@@ -285,6 +306,8 @@ impl SidecarManager {
                 e
             )
         })?;
+
+        // 分别取出 IO 句柄；stdin 交给 writer 任务，stdout/stderr 交给各自的 reader 任务
         let stdin = child
             .stdin
             .take()
@@ -298,17 +321,42 @@ impl SidecarManager {
             .take()
             .ok_or_else(|| anyhow::anyhow!("无法获取 Python stderr 管道"))?;
 
+        // 仅保留 child 用于 kill，stdin 已由 writer 任务独占
         self.child = Some(ActiveProcess::Dev {
             child: Box::new(child),
-            stdin,
         });
-        self.running.store(true, Ordering::SeqCst);
-        // 通知等待方（如 RpcClient）：进程已就绪；notify_one 会存储 permit，
-        // 即使此时尚无等待者，之后第一个 notified().await 也会立即返回。
-        self.ready_notify.notify_one();
 
-        // 异步监听 stdout
-        let running = Arc::clone(&self.running);
+        // 建立 stdin 写入 mpsc 通道，writer 任务持有 rx 端
+        let (tx, mut rx) = mpsc::channel::<Vec<u8>>(64);
+        {
+            let mut g = self.stdin_tx.lock().unwrap();
+            *g = Some(tx);
+        }
+
+        // 标记进程就绪，向所有 waiter 广播 true（Fix 1）
+        self.running.store(true, Ordering::SeqCst);
+        self.ready_tx.send(true).ok();
+
+        // ── stdin writer 任务：异步消费 mpsc 队列，写入 Python 进程的 stdin ──────────
+        tokio::spawn(async move {
+            let mut stdin = stdin;
+            while let Some(bytes) = rx.recv().await {
+                if stdin.write_all(&bytes).await.is_err() {
+                    warn!("[SidecarManager] Dev stdin-writer: 写入失败，退出");
+                    break;
+                }
+                if stdin.flush().await.is_err() {
+                    warn!("[SidecarManager] Dev stdin-writer: 刷新失败，退出");
+                    break;
+                }
+            }
+            debug!("[SidecarManager] Dev stdin-writer 任务已退出");
+        });
+
+        // ── stdout reader 任务 ────────────────────────────────────────────────────────
+        let running_stdout = Arc::clone(&self.running);
+        let ready_tx_stdout = Arc::clone(&self.ready_tx);
+        let stdin_tx_stdout = Arc::clone(&self.stdin_tx);
         let on_exit_stdout = Arc::clone(&on_exit);
         let on_message_clone = Arc::clone(&on_message);
         tokio::spawn(async move {
@@ -317,25 +365,35 @@ impl SidecarManager {
                 handle_stdout_line(&line, &on_message_clone, "dev");
             }
             info!("[SidecarManager] 开发模式 stdout 管道已关闭");
-            Self::notify_exit(&running, &on_exit_stdout);
+            Self::notify_exit(&running_stdout, &ready_tx_stdout, &stdin_tx_stdout, &on_exit_stdout);
         });
 
-        // 异步监听 stderr 并直接打印日志
+        // ── stderr reader 任务（Fix 3：关闭时也触发 notify_exit，幂等安全）────────────
         let app = self.app.clone();
         let logs = Arc::clone(&self.logs);
         let next_log_seq = Arc::clone(&self.next_log_seq);
+        let running_stderr = Arc::clone(&self.running);
+        let ready_tx_stderr = Arc::clone(&self.ready_tx);
+        let stdin_tx_stderr = Arc::clone(&self.stdin_tx);
+        let on_exit_stderr = Arc::clone(&on_exit);
         tokio::spawn(async move {
             let mut reader = BufReader::new(stderr).lines();
             while let Ok(Some(line)) = reader.next_line().await {
                 info!("[sidecar stderr (dev)] {}", line);
                 emit_sidecar_log(&app, &logs, &next_log_seq, "dev", "stderr", line);
             }
+            info!("[SidecarManager] 开发模式 stderr 管道已关闭");
+            // Fix 3：stderr 关闭也视为进程退出信号（幂等，只触发一次）
+            Self::notify_exit(&running_stderr, &ready_tx_stderr, &stdin_tx_stderr, &on_exit_stderr);
         });
 
         Ok(())
     }
 
     /// 生产发布模式：拉起 PyInstaller 打包好的 Sidecar 二进制程序。
+    ///
+    /// Fix 2：CommandChild 用 Arc 包裹共享于 writer 任务和 kill 路径；
+    ///         writer 任务独立写入，不再需要锁住 SidecarManager。
     async fn start_release_sidecar(
         &mut self,
         on_message: Arc<dyn Fn(Value) + Send + Sync>,
@@ -348,11 +406,44 @@ impl SidecarManager {
             .spawn()
             .map_err(|e| anyhow::anyhow!("启动 Sidecar 进程失败: {}", e))?;
 
-        self.child = Some(ActiveProcess::Sidecar(child));
-        self.running.store(true, Ordering::SeqCst);
-        self.ready_notify.notify_one();
+        // CommandChild::write 取 &mut self，用 Arc<StdMutex<>> 共享给 writer 任务和 kill 路径
+        let child_arc = Arc::new(StdMutex::new(child));
+        let child_for_writer = Arc::clone(&child_arc);
 
+        // 建立 stdin 写入 mpsc 通道
+        let (tx, mut stdin_rx) = mpsc::channel::<Vec<u8>>(64);
+        {
+            let mut g = self.stdin_tx.lock().unwrap();
+            *g = Some(tx);
+        }
+
+        self.child = Some(ActiveProcess::Sidecar(child_arc));
+        self.running.store(true, Ordering::SeqCst);
+        self.ready_tx.send(true).ok();
+
+        // ── stdin writer 任务：锁 CommandChild，调用 write()（同步但通常极快）────────
+        tokio::spawn(async move {
+            while let Some(bytes) = stdin_rx.recv().await {
+                match child_for_writer.lock() {
+                    Ok(mut child) => {
+                        if child.write(&bytes).is_err() {
+                            warn!("[SidecarManager] Sidecar stdin-writer: 写入失败，退出");
+                            break;
+                        }
+                    }
+                    Err(_) => {
+                        warn!("[SidecarManager] Sidecar stdin-writer: CommandChild 锁已中毒");
+                        break;
+                    }
+                }
+            }
+            debug!("[SidecarManager] Sidecar stdin-writer 任务已退出");
+        });
+
+        // ── 事件监听任务（stdout/stderr/exit）────────────────────────────────────────
         let running = Arc::clone(&self.running);
+        let ready_tx = Arc::clone(&self.ready_tx);
+        let stdin_tx = Arc::clone(&self.stdin_tx);
         let app = self.app.clone();
         let logs = Arc::clone(&self.logs);
         let next_log_seq = Arc::clone(&self.next_log_seq);
@@ -406,13 +497,14 @@ impl SidecarManager {
                             );
                         }
                         info!("[SidecarManager] Sidecar 进程已退出: {:?}", status);
-                        Self::notify_exit(&running, &on_exit);
+                        Self::notify_exit(&running, &ready_tx, &stdin_tx, &on_exit);
                         break;
                     }
                     _ => {}
                 }
             }
-            Self::notify_exit(&running, &on_exit);
+            // 兜底：rx 通道异常关闭时也触发退出通知
+            Self::notify_exit(&running, &ready_tx, &stdin_tx, &on_exit);
         });
 
         Ok(())
@@ -444,8 +536,16 @@ impl SidecarManager {
     }
 
     /// 停止正在运行的 Python Sidecar 进程。
+    ///
+    /// Fix 1+2：同步广播 ready=false 并清空 stdin_tx，让所有等待者和写入者立即感知停止。
     pub fn stop(&mut self) -> Result<()> {
         self.running.store(false, Ordering::SeqCst);
+        // 广播进程不可用（Fix 1）
+        let _ = self.ready_tx.send(false);
+        // 清空写入通道，writer 任务因 rx 关闭而自动退出（Fix 2）
+        if let Ok(mut g) = self.stdin_tx.lock() {
+            *g = None;
+        }
         if let Some(child) = self.child.take() {
             child.kill()?;
             info!("[SidecarManager] Sidecar 进程已被成功关闭");
@@ -453,7 +553,7 @@ impl SidecarManager {
         Ok(())
     }
 
-    // 查询当前运行状态
+    /// 查询当前运行状态
     pub fn is_running(&self) -> bool {
         self.running.load(Ordering::SeqCst)
     }
@@ -463,17 +563,5 @@ impl SidecarManager {
             .lock()
             .map(|buffer| buffer.iter().cloned().collect())
             .unwrap_or_default()
-    }
-
-    /// 向 Sidecar 的标准输入（stdin）写入一行 JSON 报文并换行。
-    pub async fn write_message(&mut self, msg: &Value) -> Result<()> {
-        if let Some(child) = &mut self.child {
-            let mut line = serde_json::to_string(msg)?;
-            line.push('\n');
-            child.write(line.as_bytes()).await?;
-            Ok(())
-        } else {
-            Err(anyhow::anyhow!("Sidecar 进程未处于运行状态"))
-        }
     }
 }

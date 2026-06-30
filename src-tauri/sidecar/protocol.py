@@ -57,6 +57,10 @@ async def stdin_reader(queue: asyncio.Queue[dict[str, Any]]) -> None:
     """
     流式监听并切分 stdin 管道，将解析合规的 JSON 报文推入接收队列。
     若读到管道关闭事件（EOF）则退出。
+
+    Fix 7：队列满时改为丢弃并返回背压错误，而非无限阻塞 stdin 读取协程。
+    当 stdin_reader 被阻塞时，Rust 端的 stdin 写入会因管道缓冲区满而反压，
+    最终导致 RPC 请求超时——现在通过主动丢弃并上报错误来避免这一死锁。
     """
     logger.debug("标准输入流读取监听开启")
     while True:
@@ -76,10 +80,24 @@ async def stdin_reader(queue: asyncio.Queue[dict[str, Any]]) -> None:
                 continue
             try:
                 msg = json.loads(line)
-                await queue.put(msg)
             except json.JSONDecodeError as e:
                 logger.warning("丢弃非合规 JSON 报文: %s — 原始报文: %s", e, line)
                 await send_error(None, -32700, "Parse error")
+                continue
+
+            # Fix 7：尝试非阻塞入队；队列满时丢弃并返回背压错误，
+            # 防止 stdin_reader 协程永久挂起导致管道死锁。
+            try:
+                queue.put_nowait(msg)
+            except asyncio.QueueFull:
+                msg_id = msg.get("id") if isinstance(msg, dict) else None
+                logger.warning(
+                    "入站消息队列已满（capacity=%d），丢弃消息: %.120r",
+                    queue.maxsize,
+                    line,
+                )
+                await send_error(msg_id, -32000, "Server busy: inbound queue full")
+
         except asyncio.CancelledError:
             break
         except Exception as e:

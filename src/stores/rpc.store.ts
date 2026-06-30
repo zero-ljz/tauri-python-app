@@ -66,13 +66,14 @@ class RpcStore {
     const startTime = Date.now();
     this.addEntry({ timestamp: startTime, direction: "request", method, params });
     return (result?: unknown, error?: string) => {
+      const endTime = Date.now(); // Fix 6: 单一快照，同时用于 timestamp 和 duration
       this.addEntry({
-        timestamp: Date.now(),
+        timestamp: endTime,
         direction: error ? "error" : "response",
         method,
         result,
         error,
-        duration: Date.now() - startTime,
+        duration: endTime - startTime,
       });
     };
   }
