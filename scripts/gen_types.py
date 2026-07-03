@@ -8,7 +8,7 @@ from typing import Any
 
 
 ROOT = Path(__file__).resolve().parents[1]
-SIDECAR_DIR = ROOT / "src-tauri" / "sidecar"
+SIDECAR_DIR = ROOT / "sidecar"
 SCHEMA_PATH = ROOT / "src" / "types" / "schema.json"
 OUTPUT_PATH = ROOT / "src" / "types" / "generated.ts"
 

@@ -10,7 +10,7 @@ from pathlib import Path
 
 
 ROOT = Path(__file__).resolve().parents[1]
-SIDECAR_MAIN = ROOT / "src-tauri" / "sidecar" / "main.py"
+SIDECAR_MAIN = ROOT / "sidecar" / "main.py"
 BIN_DIR = ROOT / "src-tauri" / "bin"
 BUILD_DIR = ROOT / "build" / "pyinstaller"
 

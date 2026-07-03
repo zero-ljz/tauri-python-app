@@ -286,7 +286,9 @@ impl SidecarManager {
         on_message: Arc<dyn Fn(Value) + Send + Sync>,
         on_exit: Arc<dyn Fn() + Send + Sync>,
     ) -> Result<()> {
-        let sidecar_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("sidecar");
+        let manifest_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+        let workspace_dir = manifest_dir.parent().unwrap_or(manifest_dir.as_path());
+        let sidecar_dir = workspace_dir.join("sidecar");
         let sidecar_script = sidecar_dir.join("main.py");
         let python = Self::resolve_dev_python();
         info!("[SidecarManager] 开发模式 Python: {}", python.display());

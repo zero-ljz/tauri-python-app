@@ -49,11 +49,11 @@ src-tauri/src/rpc/            JSON-RPC pending request 管理
 src-tauri/src/bridge/         Python stdout 消息分发
 src-tauri/src/commands/       前端可 invoke 的 Tauri commands
 
-src-tauri/sidecar/            Python sidecar
-src-tauri/sidecar/main.py     sidecar 主循环
-src-tauri/sidecar/protocol.py stdin/stdout 协议层
-src-tauri/sidecar/models.py   pydantic schema
-src-tauri/sidecar/handlers/   RPC handlers
+sidecar/                      Python sidecar
+sidecar/main.py               sidecar 主循环
+sidecar/protocol.py           stdin/stdout 协议层
+sidecar/models.py             pydantic schema
+sidecar/handlers/             RPC handlers
 
 scripts/gen_types.py          pydantic schema -> TypeScript
 scripts/build_sidecar.py      PyInstaller sidecar 打包脚本
@@ -142,10 +142,10 @@ RpcDebugPanel 包含：
 
 ### 新增 Python RPC handler
 
-1. 在 `src-tauri/sidecar/handlers/` 下新增或修改 handler。
+1. 在 `sidecar/handlers/` 下新增或修改 handler。
 2. 使用 `@dispatcher.register("method.name")` 注册方法。
-3. 如果新增了文件，在 `src-tauri/sidecar/main.py` 中 import 它，确保装饰器执行。
-4. 如果涉及新数据结构，更新 `src-tauri/sidecar/models.py`。
+3. 如果新增了文件，在 `sidecar/main.py` 中 import 它，确保装饰器执行。
+4. 如果涉及新数据结构，更新 `sidecar/models.py`。
 5. 运行：
 
 ```bash
@@ -215,7 +215,7 @@ python scripts/build_sidecar.py --clean-cache
 类型来源：
 
 ```text
-src-tauri/sidecar/models.py
+sidecar/models.py
 ```
 
 生成输出：
@@ -294,13 +294,13 @@ Tauri CSP 配置在 `src-tauri/tauri.conf.json`：
 
 - Python 解释器不可用
 - `.venv` 里缺少依赖
-- `src-tauri/sidecar/main.py` 启动异常
+- `sidecar/main.py` 启动异常
 - 打包后的 sidecar 二进制不存在或过期
 
 处理：
 
 ```bash
-python src-tauri/sidecar/main.py
+python sidecar/main.py
 pnpm build:sidecar
 pnpm tauri dev
 ```
@@ -333,7 +333,7 @@ pnpm tauri build --debug --no-bundle
 pnpm build
 cargo check --manifest-path src-tauri/Cargo.toml
 cargo clippy --manifest-path src-tauri/Cargo.toml -- -D warnings
-python -m py_compile src-tauri/sidecar/main.py src-tauri/sidecar/models.py src-tauri/sidecar/protocol.py src-tauri/sidecar/dispatcher.py src-tauri/sidecar/task_manager.py src-tauri/sidecar/handlers/echo.py src-tauri/sidecar/handlers/tasks.py
+python -m py_compile sidecar/main.py sidecar/models.py sidecar/protocol.py sidecar/dispatcher.py sidecar/task_manager.py sidecar/handlers/echo.py sidecar/handlers/tasks.py
 ```
 
 发布前再运行：
