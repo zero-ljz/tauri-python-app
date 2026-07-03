@@ -11,8 +11,8 @@ from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
 from typing import Any, Callable, Awaitable, Optional
 
-from protocol import send_notification
-from models import TaskStatus, TaskResult, TaskProgress, TaskSummary, TaskCancelResult
+from backend.protocol import send_notification
+from backend.models import TaskStatus, TaskResult, TaskProgress, TaskSummary, TaskCancelResult
 
 logger = logging.getLogger(__name__)
 

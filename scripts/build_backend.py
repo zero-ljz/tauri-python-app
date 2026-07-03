@@ -8,43 +8,13 @@ import subprocess
 import sys
 from pathlib import Path
 
+from _python_env import reexec_with_local_venv
+
 
 ROOT = Path(__file__).resolve().parents[1]
 BACKEND_MAIN = ROOT / "backend" / "main.py"
 BIN_DIR = ROOT / "src-tauri" / "bin"
 BUILD_DIR = ROOT / "build" / "pyinstaller"
-
-
-def venv_python(venv_dir: Path) -> Path:
-    if os.name == "nt":
-        return venv_dir / "Scripts" / "python.exe"
-    return venv_dir / "bin" / "python"
-
-
-def local_venv_python() -> Path | None:
-    for venv_dir in (ROOT / ".venv", ROOT / "src-tauri" / ".venv", ROOT / "venv", ROOT / "src-tauri" / "venv"):
-        python = venv_python(venv_dir)
-        if python.is_file():
-            return python
-    return None
-
-
-def reexec_with_local_venv() -> None:
-    if os.environ.get("BACKEND_BUILD_REEXEC") == "1":
-        return
-
-    python = local_venv_python()
-    if python is None:
-        return
-
-    current = Path(sys.executable).resolve()
-    if current == python.resolve():
-        return
-
-    env = os.environ.copy()
-    env["BACKEND_BUILD_REEXEC"] = "1"
-    completed = subprocess.run([str(python), *sys.argv], cwd=ROOT, env=env)
-    raise SystemExit(completed.returncode)
 
 
 def rust_host_triple() -> str | None:
@@ -114,6 +84,8 @@ def run_pyinstaller(target: str) -> Path:
         "--console",
         "--name",
         name,
+        "--paths",
+        str(ROOT),
         "--distpath",
         str(BIN_DIR),
         "--workpath",
@@ -134,7 +106,16 @@ def run_pyinstaller(target: str) -> Path:
 
 
 def main() -> None:
-    reexec_with_local_venv()
+    reexec_with_local_venv(
+        ROOT,
+        "BACKEND_BUILD_REEXEC",
+        (
+            ROOT / ".venv",
+            ROOT / "src-tauri" / ".venv",
+            ROOT / "venv",
+            ROOT / "src-tauri" / "venv",
+        ),
+    )
 
     parser = argparse.ArgumentParser(description="Build the Python backend binary for Tauri.")
     parser.add_argument(

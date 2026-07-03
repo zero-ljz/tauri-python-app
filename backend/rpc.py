@@ -2,8 +2,8 @@ from __future__ import annotations
 
 from typing import Any, Callable
 
-from dispatcher import dispatcher
-from protocol import send_notification
+from backend.dispatcher import dispatcher
+from backend.protocol import send_notification
 
 
 class RpcServer:

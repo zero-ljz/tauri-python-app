@@ -3507,7 +3507,6 @@ dependencies = [
  "anyhow",
  "dashmap",
  "log",
- "once_cell",
  "serde",
  "serde_json",
  "tauri",

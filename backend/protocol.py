@@ -11,7 +11,7 @@ import sys
 import logging
 from typing import Any, Union
 
-from models import RpcNotification, RpcError
+from backend.models import RpcNotification, RpcError
 
 logger = logging.getLogger(__name__)
 JsonRpcId = Union[str, int, None]

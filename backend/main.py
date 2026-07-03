@@ -8,7 +8,11 @@ from __future__ import annotations
 import asyncio
 import logging
 import sys
+from pathlib import Path
 from typing import Any
+
+if __package__ in {None, ""}:
+    sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 # Windows/PyInstaller 环境默认编码可能不是 UTF-8；显式固定协议与日志编码。
 if hasattr(sys.stdout, "reconfigure"):
@@ -25,15 +29,15 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-from protocol import stdin_reader, send_response, send_error, send_notification
-from task_manager import TaskRegistry
-from models import BackendReadyPayload
-from dispatcher import dispatcher, RpcMethodNotFoundError
-from rpc import rpc
+from backend.protocol import stdin_reader, send_response, send_error, send_notification
+from backend.task_manager import TaskRegistry
+from backend.models import BackendReadyPayload
+from backend.dispatcher import dispatcher, RpcMethodNotFoundError
+from backend.rpc import rpc
 
 # ─── 导入业务处理器以自动触发 @rpc.register 装饰器绑定 ───────────────────
-import handlers.echo
-import handlers.tasks
+import backend.handlers.echo
+import backend.handlers.tasks
 
 registry = TaskRegistry()
 MAX_INBOUND_QUEUE = 128

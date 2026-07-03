@@ -28,7 +28,6 @@ uuid = { version = "1", features = ["v4"] }
 dashmap = "6"
 anyhow = "1"
 log = "0.4"
-once_cell = "1"
 
 # Read the optimization guideline for more details: https://tauri.app/concept/size/#cargo-configuration
 [profile.release]

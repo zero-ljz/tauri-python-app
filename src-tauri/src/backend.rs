@@ -288,23 +288,22 @@ impl BackendRuntime {
     ) -> Result<()> {
         let manifest_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
         let workspace_dir = manifest_dir.parent().unwrap_or(manifest_dir.as_path());
-        let backend_dir = workspace_dir.join("backend");
-        let backend_script = backend_dir.join("main.py");
         let python = Self::resolve_dev_python();
         info!("[BackendRuntime] 开发模式 Python: {}", python.display());
 
         let mut cmd = Command::new(&python);
-        cmd.arg(&backend_script)
-            .current_dir(&backend_dir)
+        cmd.arg("-m")
+            .arg("backend.main")
+            .current_dir(&workspace_dir)
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped());
 
         let mut child = cmd.spawn().map_err(|e| {
             anyhow::anyhow!(
-                "无法拉起 Python 调试进程: python={}, script={}, error={}",
+                "无法拉起 Python 调试进程: python={}, module=backend.main, cwd={}, error={}",
                 python.display(),
-                backend_script.display(),
+                workspace_dir.display(),
                 e
             )
         })?;

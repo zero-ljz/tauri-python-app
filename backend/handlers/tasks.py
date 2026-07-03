@@ -1,7 +1,7 @@
 import asyncio
 import time
-from rpc import rpc
-from task_manager import TaskRegistry
+from backend.rpc import rpc
+from backend.task_manager import TaskRegistry
 
 
 @rpc.register("task.list")

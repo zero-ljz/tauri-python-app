@@ -1,5 +1,5 @@
 from typing import Any
-from rpc import rpc
+from backend.rpc import rpc
 
 
 @rpc.register("echo")

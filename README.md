@@ -156,7 +156,7 @@ pnpm build
 示例：
 
 ```python
-from rpc import rpc
+from backend.rpc import rpc
 
 @rpc.register("echo")
 async def handle_echo(params: dict) -> dict:
@@ -300,7 +300,7 @@ Tauri CSP 配置在 `src-tauri/tauri.conf.json`：
 处理：
 
 ```bash
-python backend/main.py
+python -m backend.main
 pnpm build:backend
 pnpm tauri dev
 ```
@@ -333,7 +333,7 @@ pnpm tauri build --debug --no-bundle
 pnpm build
 cargo check --manifest-path src-tauri/Cargo.toml
 cargo clippy --manifest-path src-tauri/Cargo.toml -- -D warnings
-python -m py_compile backend/main.py backend/models.py backend/protocol.py backend/dispatcher.py backend/task_manager.py backend/handlers/echo.py backend/handlers/tasks.py
+python -m py_compile backend/__init__.py backend/main.py backend/models.py backend/protocol.py backend/dispatcher.py backend/rpc.py backend/task_manager.py backend/handlers/echo.py backend/handlers/tasks.py
 ```
 
 发布前再运行：
