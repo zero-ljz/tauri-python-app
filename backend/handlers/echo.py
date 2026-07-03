@@ -1,7 +1,8 @@
 from typing import Any
-from dispatcher import dispatcher
+from rpc import rpc
 
-@dispatcher.register("echo")
+
+@rpc.register("echo")
 async def handle_echo(params: Any) -> Any:
     """Return the params as-is."""
     return params

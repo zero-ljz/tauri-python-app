@@ -1,6 +1,6 @@
 import { observer } from "mobx-react-lite";
 import { useState } from "react";
-import { backendRequest } from "@/lib/backend";
+import { rpc } from "@/lib/rpc";
 import { rpcStore, type BackendLogEntry, type RpcEntry } from "@/stores/rpc.store";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { Button } from "@/components/ui/button";
@@ -147,7 +147,7 @@ const SendPanel = observer(() => {
     }
 
     try {
-      await backendRequest(method, parsedParams);
+      await rpc.call(method, parsedParams);
     } catch (e) {
       const msg = e instanceof Error ? e.message : String(e);
       setLastError(msg);

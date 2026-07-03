@@ -40,7 +40,7 @@ src/                         React frontend
 src/components/debug/         IPC debug panel
 src/components/titlebar/      custom titlebar and window controls
 src/stores/                   MobX stores
-src/lib/backend.ts            frontend backend client
+src/lib/rpc.ts                frontend RPC client
 src/types/generated.ts        generated TypeScript types
 
 src-tauri/src/                Rust/Tauri glue layer
@@ -143,7 +143,7 @@ RpcDebugPanel 包含：
 ### 新增 Python RPC handler
 
 1. 在 `backend/handlers/` 下新增或修改 handler。
-2. 使用 `@dispatcher.register("method.name")` 注册方法。
+2. 使用 `@rpc.register("method.name")` 注册方法。
 3. 如果新增了文件，在 `backend/main.py` 中 import 它，确保装饰器执行。
 4. 如果涉及新数据结构，更新 `backend/models.py`。
 5. 运行：
@@ -156,9 +156,9 @@ pnpm build
 示例：
 
 ```python
-from dispatcher import dispatcher
+from rpc import rpc
 
-@dispatcher.register("echo")
+@rpc.register("echo")
 async def handle_echo(params: dict) -> dict:
     return params
 ```

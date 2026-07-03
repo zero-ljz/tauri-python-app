@@ -29,8 +29,9 @@ from protocol import stdin_reader, send_response, send_error, send_notification
 from task_manager import TaskRegistry
 from models import BackendReadyPayload
 from dispatcher import dispatcher, RpcMethodNotFoundError
+from rpc import rpc
 
-# ─── 导入业务处理器以自动触发 @dispatcher.register 装饰器绑定 ───────────────────
+# ─── 导入业务处理器以自动触发 @rpc.register 装饰器绑定 ───────────────────
 import handlers.echo
 import handlers.tasks
 
@@ -93,7 +94,7 @@ async def main() -> None:
         "backend.ready",
         BackendReadyPayload(
             version="0.1.0",
-            capabilities=list(dispatcher.handlers.keys()),
+            capabilities=rpc.methods,
         ).model_dump(),
     )
 

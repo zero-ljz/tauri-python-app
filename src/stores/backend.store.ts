@@ -1,7 +1,6 @@
 import { makeAutoObservable, runInAction } from "mobx";
-import { backendLogs, backendStatus, listenBackend, listenBackendRaw } from "@/lib/backend";
+import { backendLogs, backendStatus, rpc } from "@/lib/rpc";
 import { rpcStore } from "@/stores/rpc.store";
-import type { UnlistenFn } from "@tauri-apps/api/event";
 import type {
   BackendReadyPayload,
   LogPayload,
@@ -31,7 +30,8 @@ class BackendStore {
   capabilities: string[] = [];
   tasks = new Map<string, TrackedTask>();
   lastError: string | null = null;
-  private _unlisteners: UnlistenFn[] = [];
+  private _offHandlers: Array<() => void> = [];
+  private _subscriptions: string[] = [];
 
   constructor() {
     makeAutoObservable(this, {}, { autoBind: true });
@@ -42,17 +42,31 @@ class BackendStore {
   }
 
   private async _init() {
+    const trackedEvents = [
+      "backend.ready",
+      "backend.exited",
+      "task.status",
+      "task.progress",
+      "task.result",
+    ];
+    const rawEvents = ["backend.log"];
+    const offHandlers = [
+      rpc.on<BackendReadyPayload>("backend.ready", this.handleReady),
+      rpc.on<{ reason?: string }>("backend.exited", this.handleExited),
+      rpc.on<TaskStatus>("task.status", this.handleTaskStatus),
+      rpc.on<TaskProgress>("task.progress", this.handleTaskProgress),
+      rpc.on<TaskResult>("task.result", this.handleTaskResult),
+      rpc.on<LogPayload>("backend.log", this.handleBackendLog),
+    ];
+
     try {
-      const unlisteners = await Promise.all([
-        listenBackend<BackendReadyPayload>("backend.ready", this.handleReady),
-        listenBackend<{ reason?: string }>("backend.exited", this.handleExited),
-        listenBackend<TaskStatus>("task.status", this.handleTaskStatus),
-        listenBackend<TaskProgress>("task.progress", this.handleTaskProgress),
-        listenBackend<TaskResult>("task.result", this.handleTaskResult),
-        listenBackendRaw<LogPayload>("backend.log", this.handleBackendLog),
+      await Promise.all([
+        rpc.subscribe(trackedEvents),
+        rpc.subscribe(rawEvents, { track: false }),
       ]);
       runInAction(() => {
-        this._unlisteners = unlisteners;
+        this._offHandlers = offHandlers;
+        this._subscriptions = [...trackedEvents, ...rawEvents];
       });
 
       const logs = await backendLogs();
@@ -66,6 +80,9 @@ class BackendStore {
         this.state = "error";
         this.lastError = error instanceof Error ? error.message : String(error);
       });
+      for (const off of offHandlers) {
+        off();
+      }
     }
 
     try {
@@ -162,10 +179,14 @@ class BackendStore {
   }
 
   dispose() {
-    for (const unlisten of this._unlisteners) {
-      unlisten();
+    for (const off of this._offHandlers) {
+      off();
     }
-    this._unlisteners = [];
+    for (const event of this._subscriptions) {
+      void rpc.unsubscribe(event);
+    }
+    this._offHandlers = [];
+    this._subscriptions = [];
   }
 }
 

@@ -1,14 +1,16 @@
 import asyncio
 import time
-from dispatcher import dispatcher
+from rpc import rpc
 from task_manager import TaskRegistry
 
-@dispatcher.register("task.list")
+
+@rpc.register("task.list")
 async def handle_task_list(registry: TaskRegistry) -> list[dict]:
     """Return all active tasks."""
     return registry.list_tasks()
 
-@dispatcher.register("task.cancel")
+
+@rpc.register("task.cancel")
 async def handle_task_cancel(params: dict, registry: TaskRegistry) -> dict:
     """Cancel a task by task_id."""
     if not isinstance(params, dict) or "task_id" not in params:
@@ -16,7 +18,8 @@ async def handle_task_cancel(params: dict, registry: TaskRegistry) -> dict:
     task_id = params["task_id"]
     return await registry.cancel(task_id)
 
-@dispatcher.register("task.long")
+
+@rpc.register("task.long")
 async def handle_long_task(registry: TaskRegistry) -> dict:
     """
     Example: spawn a long-running async task.
@@ -31,7 +34,8 @@ async def handle_long_task(registry: TaskRegistry) -> dict:
     task_id = registry.submit_async("task.long", _work)
     return {"task_id": task_id}
 
-@dispatcher.register("task.blocking")
+
+@rpc.register("task.blocking")
 async def handle_blocking_task(registry: TaskRegistry) -> dict:
     """
     Example: spawn a blocking worker thread task.
