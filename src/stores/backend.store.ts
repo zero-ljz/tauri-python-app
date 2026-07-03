@@ -31,7 +31,7 @@ class BackendStore {
   tasks = new Map<string, TrackedTask>();
   lastError: string | null = null;
   private _offHandlers: Array<() => void> = [];
-  private _subscriptions: string[] = [];
+  private _listeners: string[] = [];
 
   constructor() {
     makeAutoObservable(this, {}, { autoBind: true });
@@ -61,12 +61,12 @@ class BackendStore {
 
     try {
       await Promise.all([
-        rpc.subscribe(trackedEvents),
-        rpc.subscribe(rawEvents, { track: false }),
+        rpc.listen(trackedEvents),
+        rpc.listen(rawEvents, { track: false }),
       ]);
       runInAction(() => {
         this._offHandlers = offHandlers;
-        this._subscriptions = [...trackedEvents, ...rawEvents];
+        this._listeners = [...trackedEvents, ...rawEvents];
       });
 
       const logs = await backendLogs();
@@ -182,11 +182,11 @@ class BackendStore {
     for (const off of this._offHandlers) {
       off();
     }
-    for (const event of this._subscriptions) {
-      void rpc.unsubscribe(event);
+    for (const event of this._listeners) {
+      void rpc.unlisten(event);
     }
     this._offHandlers = [];
-    this._subscriptions = [];
+    this._listeners = [];
   }
 }
 

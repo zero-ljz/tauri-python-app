@@ -57,7 +57,7 @@ impl EventBridge {
             let params = msg.get("params").cloned().unwrap_or(Value::Null);
             debug!("[EventBridge] 收到来自 Python 的通知: method={}", method);
 
-            // 将通知转换转发为 Tauri 的前端全局订阅事件
+            // 将后端通知转发为前端监听的 Tauri 事件。
             let event_name = format!("backend://{}", method);
             if let Err(e) = self.app.emit(&event_name, params) {
                 warn!("[EventBridge] 派发事件失败 {}: {}", event_name, e);

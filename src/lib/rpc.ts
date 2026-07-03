@@ -5,7 +5,7 @@ import type { LogPayload } from "@/types/generated";
 
 export type RpcEventHandler<T = unknown> = (payload: T) => void;
 
-export interface RpcSubscribeOptions {
+export interface RpcListenOptions {
   track?: boolean;
 }
 
@@ -53,35 +53,35 @@ class TauriRpcClient {
     return invoke("backend_notify", { method, params: params ?? null });
   }
 
-  async subscribe(
+  async listen(
     event: string,
-    options?: RpcSubscribeOptions
+    options?: RpcListenOptions
   ): Promise<void>;
-  async subscribe(
+  async listen(
     event: string[],
-    options?: RpcSubscribeOptions
+    options?: RpcListenOptions
   ): Promise<Record<string, true>>;
-  async subscribe(
+  async listen(
     event: string | string[],
-    options: RpcSubscribeOptions = {}
+    options: RpcListenOptions = {}
   ): Promise<void | Record<string, true>> {
     if (Array.isArray(event)) {
-      await Promise.all(event.map((name) => this.subscribeOne(name, options)));
+      await Promise.all(event.map((name) => this.listenOne(name, options)));
       return Object.fromEntries(event.map((name) => [name, true]));
     }
 
-    await this.subscribeOne(event, options);
+    await this.listenOne(event, options);
   }
 
-  async unsubscribe(event: string): Promise<void>;
-  async unsubscribe(event: string[]): Promise<Record<string, true>>;
-  async unsubscribe(event: string | string[]): Promise<void | Record<string, true>> {
+  async unlisten(event: string): Promise<void>;
+  async unlisten(event: string[]): Promise<Record<string, true>>;
+  async unlisten(event: string | string[]): Promise<void | Record<string, true>> {
     if (Array.isArray(event)) {
-      await Promise.all(event.map((name) => this.unsubscribeOne(name)));
+      await Promise.all(event.map((name) => this.unlistenOne(name)));
       return Object.fromEntries(event.map((name) => [name, true]));
     }
 
-    await this.unsubscribeOne(event);
+    await this.unlistenOne(event);
   }
 
   on<T = unknown>(event: string, handler: RpcEventHandler<T>): () => void {
@@ -102,11 +102,11 @@ class TauriRpcClient {
 
   async close(): Promise<void> {
     const events = [...this.unlisteners.keys()];
-    await Promise.all(events.map((event) => this.unsubscribeOne(event)));
+    await Promise.all(events.map((event) => this.unlistenOne(event)));
     this.handlers.clear();
   }
 
-  private async subscribeOne(event: string, options: RpcSubscribeOptions): Promise<void> {
+  private async listenOne(event: string, options: RpcListenOptions): Promise<void> {
     if (this.unlisteners.has(event)) {
       if (options.track !== undefined) {
         this.trackNotifications.set(event, options.track);
@@ -129,7 +129,7 @@ class TauriRpcClient {
     await unlisten;
   }
 
-  private async unsubscribeOne(event: string): Promise<void> {
+  private async unlistenOne(event: string): Promise<void> {
     const unlisten = this.unlisteners.get(event);
     if (!unlisten) {
       return;
@@ -151,25 +151,25 @@ export const rpcCall = <T = unknown>(
 ) => rpc.call<T>(method, params, timeout);
 
 export const rpcNotify = (method: string, params?: unknown) => rpc.notify(method, params);
-export function rpcSubscribe(
+export function rpcListen(
   event: string,
-  options?: RpcSubscribeOptions
+  options?: RpcListenOptions
 ): Promise<void>;
-export function rpcSubscribe(
+export function rpcListen(
   event: string[],
-  options?: RpcSubscribeOptions
+  options?: RpcListenOptions
 ): Promise<Record<string, true>>;
-export function rpcSubscribe(
+export function rpcListen(
   event: string | string[],
-  options?: RpcSubscribeOptions
+  options?: RpcListenOptions
 ): Promise<void | Record<string, true>> {
-  return Array.isArray(event) ? rpc.subscribe(event, options) : rpc.subscribe(event, options);
+  return Array.isArray(event) ? rpc.listen(event, options) : rpc.listen(event, options);
 }
 
-export function rpcUnsubscribe(event: string): Promise<void>;
-export function rpcUnsubscribe(event: string[]): Promise<Record<string, true>>;
-export function rpcUnsubscribe(event: string | string[]): Promise<void | Record<string, true>> {
-  return Array.isArray(event) ? rpc.unsubscribe(event) : rpc.unsubscribe(event);
+export function rpcUnlisten(event: string): Promise<void>;
+export function rpcUnlisten(event: string[]): Promise<Record<string, true>>;
+export function rpcUnlisten(event: string | string[]): Promise<void | Record<string, true>> {
+  return Array.isArray(event) ? rpc.unlisten(event) : rpc.unlisten(event);
 }
 
 export const backendStatus = () => invoke<boolean>("backend_status");
