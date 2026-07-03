@@ -10,7 +10,7 @@ from pathlib import Path
 
 
 ROOT = Path(__file__).resolve().parents[1]
-SIDECAR_MAIN = ROOT / "sidecar" / "main.py"
+BACKEND_MAIN = ROOT / "backend" / "main.py"
 BIN_DIR = ROOT / "src-tauri" / "bin"
 BUILD_DIR = ROOT / "build" / "pyinstaller"
 
@@ -30,7 +30,7 @@ def local_venv_python() -> Path | None:
 
 
 def reexec_with_local_venv() -> None:
-    if os.environ.get("SIDECAR_BUILD_REEXEC") == "1":
+    if os.environ.get("BACKEND_BUILD_REEXEC") == "1":
         return
 
     python = local_venv_python()
@@ -42,7 +42,7 @@ def reexec_with_local_venv() -> None:
         return
 
     env = os.environ.copy()
-    env["SIDECAR_BUILD_REEXEC"] = "1"
+    env["BACKEND_BUILD_REEXEC"] = "1"
     completed = subprocess.run([str(python), *sys.argv], cwd=ROOT, env=env)
     raise SystemExit(completed.returncode)
 
@@ -92,14 +92,14 @@ def resolve_target(cli_target: str | None) -> str:
 
 def executable_name(target: str) -> str:
     suffix = ".exe" if "windows" in target else ""
-    return f"sidecar-{target}{suffix}"
+    return f"backend-{target}{suffix}"
 
 
 def run_pyinstaller(target: str) -> Path:
     BIN_DIR.mkdir(parents=True, exist_ok=True)
     BUILD_DIR.mkdir(parents=True, exist_ok=True)
 
-    name = f"sidecar-{target}"
+    name = f"backend-{target}"
     output = BIN_DIR / executable_name(target)
     if output.exists():
         output.unlink()
@@ -120,7 +120,7 @@ def run_pyinstaller(target: str) -> Path:
         str(BUILD_DIR / "work"),
         "--specpath",
         str(BUILD_DIR / "spec"),
-        str(SIDECAR_MAIN),
+        str(BACKEND_MAIN),
     ]
 
     try:
@@ -129,14 +129,14 @@ def run_pyinstaller(target: str) -> Path:
         raise SystemExit(exc.returncode) from exc
 
     if not output.exists():
-        raise RuntimeError(f"PyInstaller 未生成期望的 sidecar 文件: {output}")
+        raise RuntimeError(f"PyInstaller 未生成期望的 backend 文件: {output}")
     return output
 
 
 def main() -> None:
     reexec_with_local_venv()
 
-    parser = argparse.ArgumentParser(description="Build the Python sidecar binary for Tauri.")
+    parser = argparse.ArgumentParser(description="Build the Python backend binary for Tauri.")
     parser.add_argument(
         "--target",
         help="Rust target triple, e.g. x86_64-pc-windows-msvc. Defaults to rustc host.",
@@ -148,15 +148,15 @@ def main() -> None:
     )
     args = parser.parse_args()
 
-    if not SIDECAR_MAIN.exists():
-        raise RuntimeError(f"找不到 sidecar 入口: {SIDECAR_MAIN}")
+    if not BACKEND_MAIN.exists():
+        raise RuntimeError(f"找不到 backend 入口: {BACKEND_MAIN}")
 
     if args.clean_cache and BUILD_DIR.exists():
         shutil.rmtree(BUILD_DIR)
 
     target = resolve_target(args.target)
     output = run_pyinstaller(target)
-    print(f"Built sidecar: {output}")
+    print(f"Built backend: {output}")
 
 
 if __name__ == "__main__":

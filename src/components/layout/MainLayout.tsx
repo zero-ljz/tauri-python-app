@@ -3,7 +3,7 @@ import { TitleBar } from "@/components/titlebar/TitleBar";
 import { RpcDebugPanel } from "@/components/debug/RpcDebugPanel";
 import { PreferencesDialog } from "@/components/preferences/PreferencesDialog";
 import { appStore } from "@/stores/app.store";
-import { sidecarStore } from "@/stores/sidecar.store";
+import { backendStore } from "@/stores/backend.store";
 
 interface MainLayoutProps {
   children: React.ReactNode;
@@ -11,7 +11,7 @@ interface MainLayoutProps {
 
 // 极简主布局组件（仅包含自定义标题栏与业务主内容区）
 export const MainLayout = observer(({ children }: MainLayoutProps) => {
-  const sidecarState = sidecarStore.state;
+  const backendState = backendStore.state;
 
   return (
     <div className="flex h-full w-full flex-col overflow-hidden bg-background text-foreground">
@@ -19,7 +19,7 @@ export const MainLayout = observer(({ children }: MainLayoutProps) => {
       <TitleBar />
       
       {/* 主视图内容区域 */}
-      <div className="flex flex-1 min-h-0 overflow-hidden" data-sidecar-state={sidecarState}>
+      <div className="flex flex-1 min-h-0 overflow-hidden" data-backend-state={backendState}>
         <main className="flex-1 overflow-auto min-h-0">
           {children}
         </main>

@@ -5,7 +5,7 @@ use tauri::{AppHandle, Emitter};
 
 use crate::rpc::RpcClient;
 
-/// 消息网桥：负责将来自 Python Sidecar 的各类响应与通知
+/// 消息网桥：负责将来自 Python Backend 的各类响应与通知
 /// 分发给 Rust 本地的 RpcClient 或者作为 Tauri 事件通知到前端。
 pub struct EventBridge {
     app: AppHandle,
@@ -25,7 +25,7 @@ impl EventBridge {
         }
     }
 
-    /// 接收从 Sidecar (stdout) 读取的每行 JSON 报文并进行解析和流向调度。
+    /// 接收从 Backend (stdout) 读取的每行 JSON 报文并进行解析和流向调度。
     pub fn handle_message(&self, msg: Value) {
         let jsonrpc = msg.get("jsonrpc").and_then(|v| v.as_str()).unwrap_or("");
         if jsonrpc != "2.0" {
@@ -58,7 +58,7 @@ impl EventBridge {
             debug!("[EventBridge] 收到来自 Python 的通知: method={}", method);
 
             // 将通知转换转发为 Tauri 的前端全局订阅事件
-            let event_name = format!("sidecar://{}", method);
+            let event_name = format!("backend://{}", method);
             if let Err(e) = self.app.emit(&event_name, params) {
                 warn!("[EventBridge] 派发事件失败 {}: {}", event_name, e);
             }

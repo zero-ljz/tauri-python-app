@@ -1,18 +1,55 @@
 from __future__ import annotations
 
 import json
+import os
 import re
+import subprocess
 import sys
 from pathlib import Path
 from typing import Any
 
 
 ROOT = Path(__file__).resolve().parents[1]
-SIDECAR_DIR = ROOT / "sidecar"
+BACKEND_DIR = ROOT / "backend"
 SCHEMA_PATH = ROOT / "src" / "types" / "schema.json"
 OUTPUT_PATH = ROOT / "src" / "types" / "generated.ts"
 
-sys.path.insert(0, str(SIDECAR_DIR))
+
+def venv_python(venv_dir: Path) -> Path:
+    if os.name == "nt":
+        return venv_dir / "Scripts" / "python.exe"
+    return venv_dir / "bin" / "python"
+
+
+def local_venv_python() -> Path | None:
+    for venv_dir in (ROOT / ".venv", ROOT / "venv"):
+        python = venv_python(venv_dir)
+        if python.is_file():
+            return python
+    return None
+
+
+def reexec_with_local_venv() -> None:
+    if os.environ.get("BACKEND_TYPES_REEXEC") == "1":
+        return
+
+    python = local_venv_python()
+    if python is None:
+        return
+
+    current = Path(sys.executable).resolve()
+    if current == python.resolve():
+        return
+
+    env = os.environ.copy()
+    env["BACKEND_TYPES_REEXEC"] = "1"
+    completed = subprocess.run([str(python), *sys.argv], cwd=ROOT, env=env)
+    raise SystemExit(completed.returncode)
+
+
+reexec_with_local_venv()
+
+sys.path.insert(0, str(BACKEND_DIR))
 
 from models import (  # noqa: E402
     LogPayload,
@@ -20,7 +57,7 @@ from models import (  # noqa: E402
     RpcNotification,
     RpcRequest,
     RpcResponse,
-    SidecarReadyPayload,
+    BackendReadyPayload,
     TaskCancelResult,
     TaskProgress,
     TaskResult,
@@ -39,7 +76,7 @@ MODELS = {
     "TaskProgress": TaskProgress,
     "TaskSummary": TaskSummary,
     "TaskCancelResult": TaskCancelResult,
-    "SidecarReadyPayload": SidecarReadyPayload,
+    "BackendReadyPayload": BackendReadyPayload,
     "LogPayload": LogPayload,
 }
 

@@ -1,8 +1,8 @@
 """
-Python Sidecar 主入口程序。
+Python Backend 主入口程序。
 - 初始化 asyncio 事件循环
 - 启动标准输入按行读取任务 -> 路由分发消息
-- 启动时向 Rust 侧推送 sidecar.ready 就绪通知
+- 启动时向 Rust 侧推送 backend.ready 就绪通知
 """
 from __future__ import annotations
 import asyncio
@@ -27,7 +27,7 @@ logger = logging.getLogger(__name__)
 
 from protocol import stdin_reader, send_response, send_error, send_notification
 from task_manager import TaskRegistry
-from models import SidecarReadyPayload
+from models import BackendReadyPayload
 from dispatcher import dispatcher, RpcMethodNotFoundError
 
 # ─── 导入业务处理器以自动触发 @dispatcher.register 装饰器绑定 ───────────────────
@@ -86,12 +86,12 @@ async def dispatch(msg: Any) -> None:
 # ─── 主异步工作循环 ───────────────────────────────────────────────────────────
 
 async def main() -> None:
-    logger.info("Sidecar 脚本初始化...")
+    logger.info("Backend 脚本初始化...")
 
     # 向 Rust 广播就绪通知，携带当前已装载的所有 RPC 方法清单作为能力表
     await send_notification(
-        "sidecar.ready",
-        SidecarReadyPayload(
+        "backend.ready",
+        BackendReadyPayload(
             version="0.1.0",
             capabilities=list(dispatcher.handlers.keys()),
         ).model_dump(),
@@ -103,7 +103,7 @@ async def main() -> None:
     active_dispatch_tasks: set[asyncio.Task] = set()
     reader_task = asyncio.create_task(stdin_reader(queue), name="stdin-reader")
 
-    logger.info("Sidecar 已进入主轮询事件循环")
+    logger.info("Backend 已进入主轮询事件循环")
 
     async def run_dispatch_with_slot(msg: Any) -> None:
         try:
@@ -148,7 +148,7 @@ async def main() -> None:
             task.cancel()
         if active_dispatch_tasks:
             await asyncio.gather(*active_dispatch_tasks, return_exceptions=True)
-        logger.info("Sidecar 进程安全退出")
+        logger.info("Backend 进程安全退出")
 
 
 if __name__ == "__main__":

@@ -17,7 +17,7 @@ from models import TaskStatus, TaskResult, TaskProgress, TaskSummary, TaskCancel
 logger = logging.getLogger(__name__)
 
 # 为阻塞类任务建立专属的共享工作线程池，防止占满 asyncio 事件循环主线程
-_thread_pool = ThreadPoolExecutor(max_workers=4, thread_name_prefix="sidecar-worker")
+_thread_pool = ThreadPoolExecutor(max_workers=4, thread_name_prefix="backend-worker")
 
 
 @dataclass

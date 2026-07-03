@@ -44,7 +44,7 @@ class RpcDispatcher:
           同时建议将 handler 改为 async def。
         """
         if method not in self.handlers:
-            raise RpcMethodNotFoundError(f"RPC 方法 {method!r} 未在 Sidecar 路由表中注册")
+            raise RpcMethodNotFoundError(f"RPC 方法 {method!r} 未在 Backend 路由表中注册")
 
         handler = self.handlers[method]
         sig = inspect.signature(handler)

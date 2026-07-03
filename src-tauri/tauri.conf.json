@@ -38,7 +38,7 @@
       "icons/icon.ico"
     ],
     "externalBin": [
-      "bin/sidecar"
+      "bin/backend"
     ]
   }
 }

@@ -72,7 +72,7 @@ export const PreferencesDialog = observer(() => {
                 IPC 调试面板
               </Label>
               <p className="text-xs text-[hsl(var(--muted-foreground))]">
-                在右侧显示实时通信报文、Sidecar 日志与调试工具
+                在右侧显示实时通信报文、Backend 日志与调试工具
               </p>
             </div>
             <Switch

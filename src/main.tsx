@@ -7,8 +7,7 @@ import "./index.css";
 import "./stores/app.store";
 import "./stores/rpc.store";
 
-// Fix 4: sidecarStore 不在模块加载时自动 init，避免 Tauri IPC 尚未就绪时触发调用
-import { sidecarStore } from "./stores/sidecar.store";
+import { backendStore } from "./stores/backend.store";
 
 ReactDOM.createRoot(document.getElementById("root") as HTMLElement).render(
   <React.StrictMode>
@@ -16,5 +15,4 @@ ReactDOM.createRoot(document.getElementById("root") as HTMLElement).render(
   </React.StrictMode>
 );
 
-// Fix 4: 在 React 渲染完成后显式初始化 Sidecar Store，此时 Tauri IPC bridge 已就绪
-void sidecarStore.init();
+void backendStore.init();

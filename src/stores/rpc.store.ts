@@ -16,7 +16,7 @@ export interface RpcEntry {
   duration?: number;   // 双向通信耗时（毫秒）
 }
 
-export interface SidecarLogEntry {
+export interface BackendLogEntry {
   id: string;
   timestamp: number;
   level: NonNullable<LogPayload["level"]>;
@@ -32,7 +32,7 @@ const logStreams = new Set(["stderr", "process"]);
 // 调试面板使用的 RPC 报文存储 Store
 class RpcStore {
   entries: RpcEntry[] = [];
-  logs: SidecarLogEntry[] = [];
+  logs: BackendLogEntry[] = [];
   maxEntries = 200;    // 循环缓冲区最大长度，防止内存暴涨
   maxLogs = 500;
   private logIds = new Set<string>();
@@ -88,11 +88,11 @@ class RpcStore {
     });
   }
 
-  addSidecarLog(payload: LogPayload) {
+  addBackendLog(payload: LogPayload) {
     const level = payload.level && logLevels.has(payload.level) ? payload.level : "info";
     const stream = payload.stream && logStreams.has(payload.stream) ? payload.stream : "stderr";
     const id = payload.seq != null
-      ? `sidecar-${payload.seq}`
+      ? `backend-${payload.seq}`
       : `${Date.now()}-${Math.random().toString(36).slice(2)}`;
 
     if (this.logIds.has(id)) {
@@ -105,7 +105,7 @@ class RpcStore {
       timestamp: payload.timestamp_ms ?? Date.now(),
       level,
       stream,
-      source: payload.source ?? "sidecar",
+      source: payload.source ?? "backend",
       message: payload.message,
       context: payload.context,
     });

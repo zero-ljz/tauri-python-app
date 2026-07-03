@@ -25,7 +25,7 @@ dist-ssr
 *.sln
 *.sw?
 
-# ─── Python Sidecar 与打包缓存 ───────────────────────────────
+# Python backend and packaging cache.
 __pycache__/
 *.pyc
 *.pyo
@@ -40,7 +40,7 @@ env/
 build/
 src-tauri/bin/
 
-# PyInstaller spec 文件（由 build_sidecar.py 在 build/pyinstaller/spec/ 内生成，
+# PyInstaller spec 文件（由 build_backend.py 在 build/pyinstaller/spec/ 内生成，
 # 根目录若有残留 spec 也一并排除）
 *.spec
 

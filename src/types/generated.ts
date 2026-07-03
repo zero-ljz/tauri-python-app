@@ -73,7 +73,7 @@ export interface TaskCancelResult {
   reason?: string | null;
 }
 
-export interface SidecarReadyPayload {
+export interface BackendReadyPayload {
   version: string;
   capabilities?: Array<string>;
 }

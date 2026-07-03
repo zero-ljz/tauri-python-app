@@ -1,8 +1,8 @@
 # Python 开发依赖（仅在开发机上使用，不随应用分发）
 # 安装：pip install -r requirements-dev.txt
 
-# Sidecar 运行时依赖（也包含在 sidecar/requirements.txt）
+# Backend 运行时依赖（也包含在 backend/requirements.txt）
 pydantic>=2.0.0
 
-# 构建工具：将 Python sidecar 打包为独立可执行文件
+# 构建工具：将 Python backend 打包为独立可执行文件
 pyinstaller>=6.0.0

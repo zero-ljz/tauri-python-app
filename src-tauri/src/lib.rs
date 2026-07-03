@@ -1,80 +1,71 @@
+mod backend;
 mod bridge;
 mod commands;
 mod rpc;
-mod sidecar;
 
 use std::sync::Arc;
 use tauri::{Emitter, Manager};
 use tokio::sync::Mutex;
 
+use backend::BackendRuntime;
 use bridge::EventBridge;
-use commands::{rpc_notify, rpc_request, sidecar_logs, sidecar_status, sidecar_stop, AppState};
+use commands::{
+    backend_logs, backend_notify, backend_request, backend_status, backend_stop, AppState,
+};
 use rpc::RpcClient;
-use sidecar::SidecarManager;
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
-        // 挂载 Tauri 默认插件与外部命令插件
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_shell::init())
         .setup(|app| {
             let app_handle = app.handle().clone();
 
-            // 1. 初始化 SidecarManager，提前取出共享写入通道和就绪订阅端
-            //    Fix 2：stdin_tx 与 SidecarManager 锁完全解耦，RpcClient 直接持有
-            //    Fix 1：ready_rx 为 watch::Receiver，多 waiter 并发等待时全部同时唤醒
-            let sidecar_mgr = SidecarManager::new(app_handle.clone());
-            let stdin_tx = sidecar_mgr.stdin_sender(); // StdinTx（Arc<StdMutex<Option<Sender>>>）
-            let ready_rx = sidecar_mgr.ready_watch();  // watch::Receiver<bool>
-            let sidecar = Arc::new(Mutex::new(sidecar_mgr));
+            let backend_runtime = BackendRuntime::new(app_handle.clone());
+            let stdin_tx = backend_runtime.stdin_sender();
+            let ready_rx = backend_runtime.ready_watch();
+            let backend = Arc::new(Mutex::new(backend_runtime));
 
-            // 2. 初始化 RpcClient（不再依赖 SidecarManager 引用）
             let rpc = Arc::new(RpcClient::new(stdin_tx, ready_rx));
-
-            // 3. 初始化消息网桥调度器
             let bridge = Arc::new(EventBridge::new(app_handle.clone(), Arc::clone(&rpc)));
 
-            // 4. 将应用状态注册托管到 Tauri Context 中
             let state = Arc::new(AppState {
-                sidecar: Arc::clone(&sidecar),
+                backend: Arc::clone(&backend),
                 rpc: Arc::clone(&rpc),
             });
             app.manage(state);
 
-            // 5. 启动 Sidecar 进程并开始监听管道输出
             let bridge_clone = Arc::clone(&bridge);
             let rpc_on_exit = Arc::clone(&rpc);
             let app_on_exit = app_handle.clone();
             tauri::async_runtime::spawn(async move {
-                let mut sidecar_guard = sidecar.lock().await;
+                let mut backend_guard = backend.lock().await;
                 let on_msg: Arc<dyn Fn(serde_json::Value) + Send + Sync> = Arc::new(move |msg| {
                     bridge_clone.handle_message(msg);
                 });
                 let on_exit: Arc<dyn Fn() + Send + Sync> = Arc::new(move || {
-                    // mark_unready 同时清空 pending 请求和 stdin_tx（Fix 2）
-                    rpc_on_exit.mark_unready("Sidecar 进程已退出");
+                    rpc_on_exit.mark_unready("Backend process exited");
                     let _ = app_on_exit.emit(
-                        "sidecar://sidecar.exited",
+                        "backend://backend.exited",
                         serde_json::json!({ "reason": "process exited" }),
                     );
                 });
-                if let Err(e) = sidecar_guard.start(on_msg, Arc::clone(&on_exit)).await {
-                    log::warn!("[setup] Sidecar 进程未能成功拉起: {}", e);
+                if let Err(e) = backend_guard.start(on_msg, Arc::clone(&on_exit)).await {
+                    log::warn!("[setup] Backend process failed to start: {}", e);
                     (on_exit)();
                 }
             });
 
             Ok(())
         })
-        // 绑定注册前端可调用的 Tauri Commands
         .invoke_handler(tauri::generate_handler![
-            sidecar_status,
-            sidecar_logs,
-            sidecar_stop,
-            rpc_request,
-            rpc_notify,
+            backend_status,
+            backend_logs,
+            backend_stop,
+            backend_request,
+            backend_notify,
         ])
         .run(tauri::generate_context!())
-        .expect("运行 Tauri 主应用时发生异常");
+        .expect("failed to run Tauri app");
 }

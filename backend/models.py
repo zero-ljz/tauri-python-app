@@ -103,8 +103,8 @@ class TaskCancelResult(BaseModel):
 
 # ─── 广播类状态通知数据模型 ─────────────────────────────────────────────────────
 
-class SidecarReadyPayload(BaseModel):
-    """Sidecar 启动自检就绪后，向 Rust 宣告能力的就绪通知负载"""
+class BackendReadyPayload(BaseModel):
+    """Backend 启动自检就绪后，向 Rust 宣告能力的就绪通知负载"""
     version: str
     capabilities: list[str] = []
 
@@ -115,6 +115,6 @@ class LogPayload(BaseModel):
     timestamp_ms: Optional[int] = None
     level: Literal["debug", "info", "warning", "error"] = "info"
     stream: Literal["stderr", "process"] = "stderr"
-    source: str = "sidecar"
+    source: str = "backend"
     message: str
     context: Optional[dict[str, Any]] = None

@@ -4,8 +4,8 @@
 # Tauri 自动生成的能力 Schema
 /gen/schemas
 
-# ─── Python Sidecar 二进制打包产物 (新增) ───
+# Python backend binary build artifacts.
 # 避免将本地 PyInstaller 生成的大体积 exe 二进制提交至 Git
-/bin/sidecar-*
+/bin/backend-*
 /bin/*.exe
 /bin/*.pdb

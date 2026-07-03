@@ -1,7 +1,7 @@
 import { observer } from "mobx-react-lite";
 import { useState } from "react";
-import { rpcStore, type RpcEntry, type SidecarLogEntry } from "@/stores/rpc.store";
-import { rpcRequest } from "@/lib/tauri-rpc";
+import { backendRequest } from "@/lib/backend";
+import { rpcStore, type BackendLogEntry, type RpcEntry } from "@/stores/rpc.store";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -26,7 +26,7 @@ const directionLabels: Record<RpcEntry["direction"], string> = {
   error: "ERR",
 };
 
-const logLevelColors: Record<SidecarLogEntry["level"], string> = {
+const logLevelColors: Record<BackendLogEntry["level"], string> = {
   debug: "text-slate-500",
   info: "text-sky-500",
   warning: "text-amber-500",
@@ -86,7 +86,7 @@ const MessagePanel = observer(() => (
   </ScrollArea>
 ));
 
-const SidecarLogRow = ({ entry }: { entry: SidecarLogEntry }) => {
+const BackendLogRow = ({ entry }: { entry: BackendLogEntry }) => {
   const time = new Date(entry.timestamp).toLocaleTimeString("zh-CN", { hour12: false });
 
   return (
@@ -112,15 +112,15 @@ const SidecarLogRow = ({ entry }: { entry: SidecarLogEntry }) => {
   );
 };
 
-const SidecarLogsPanel = observer(() => (
+const BackendLogsPanel = observer(() => (
   <ScrollArea className="h-full">
     <div className="divide-y divide-[hsl(var(--border))]">
       {rpcStore.logs.length === 0 ? (
         <div className="flex h-32 items-center justify-center text-sm text-[hsl(var(--muted-foreground))]">
-          暂无 Sidecar 日志
+          暂无 Backend 日志
         </div>
       ) : (
-        rpcStore.logs.map((entry) => <SidecarLogRow key={entry.id} entry={entry} />)
+        rpcStore.logs.map((entry) => <BackendLogRow key={entry.id} entry={entry} />)
       )}
     </div>
   </ScrollArea>
@@ -147,7 +147,7 @@ const SendPanel = observer(() => {
     }
 
     try {
-      await rpcRequest(method, parsedParams);
+      await backendRequest(method, parsedParams);
     } catch (e) {
       const msg = e instanceof Error ? e.message : String(e);
       setLastError(msg);
@@ -216,7 +216,7 @@ export const RpcDebugPanel = observer(() => {
         </Button>
       </div>
 
-      {/* 选项卡划分：报文、Sidecar 日志与手动请求 */}
+      {/* 选项卡划分：报文、Backend 日志与手动请求 */}
       <Tabs defaultValue="messages" className="flex flex-col flex-1 min-h-0">
         <div className="px-2 pt-1">
           <TabsList className="grid h-7 w-full grid-cols-3 rounded-md p-0.5">
@@ -229,7 +229,7 @@ export const RpcDebugPanel = observer(() => {
           <MessagePanel />
         </TabsContent>
         <TabsContent value="logs" className="flex-1 min-h-0 mt-0">
-          <SidecarLogsPanel />
+          <BackendLogsPanel />
         </TabsContent>
         <TabsContent value="send" className="flex-1 min-h-0 mt-0 overflow-y-auto">
           <SendPanel />

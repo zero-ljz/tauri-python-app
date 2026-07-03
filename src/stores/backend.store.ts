@@ -1,17 +1,16 @@
 import { makeAutoObservable, runInAction } from "mobx";
-import { sidecarLogs, sidecarStatus, listenSidecar, listenSidecarRaw } from "@/lib/tauri-rpc";
+import { backendLogs, backendStatus, listenBackend, listenBackendRaw } from "@/lib/backend";
 import { rpcStore } from "@/stores/rpc.store";
 import type { UnlistenFn } from "@tauri-apps/api/event";
 import type {
+  BackendReadyPayload,
   LogPayload,
-  SidecarReadyPayload,
   TaskProgress,
   TaskResult,
   TaskStatus,
 } from "@/types/generated";
 
-// 定义 Sidecar 连接状态类型
-export type SidecarState = "unknown" | "running" | "stopped" | "error";
+export type BackendState = "unknown" | "running" | "stopped" | "error";
 
 export interface TrackedTask {
   taskId: string;
@@ -26,9 +25,8 @@ export interface TrackedTask {
   error?: string | null;
 }
 
-// Sidecar 进程状态 Store
-class SidecarStore {
-  state: SidecarState = "unknown";
+class BackendStore {
+  state: BackendState = "unknown";
   version: string | null = null;
   capabilities: string[] = [];
   tasks = new Map<string, TrackedTask>();
@@ -37,33 +35,30 @@ class SidecarStore {
 
   constructor() {
     makeAutoObservable(this, {}, { autoBind: true });
-    // Fix 4: 不在构造函数中自动调用 _init()，避免模块加载时过早触发 Tauri IPC 调用。
-    // 请在应用挂载完成后显式调用 sidecarStore.init()。
   }
 
-  // 显式初始化入口（Fix 4）：由 main.tsx 在 React 挂载后调用
   async init(): Promise<void> {
     await this._init();
   }
 
-  // 初始化监听以及状态轮询
   private async _init() {
     try {
       const unlisteners = await Promise.all([
-        listenSidecar<SidecarReadyPayload>("sidecar.ready", this.handleReady),
-        listenSidecar<{ reason?: string }>("sidecar.exited", this.handleExited),
-        listenSidecar<TaskStatus>("task.status", this.handleTaskStatus),
-        listenSidecar<TaskProgress>("task.progress", this.handleTaskProgress),
-        listenSidecar<TaskResult>("task.result", this.handleTaskResult),
-        listenSidecarRaw<LogPayload>("sidecar.log", this.handleSidecarLog),
+        listenBackend<BackendReadyPayload>("backend.ready", this.handleReady),
+        listenBackend<{ reason?: string }>("backend.exited", this.handleExited),
+        listenBackend<TaskStatus>("task.status", this.handleTaskStatus),
+        listenBackend<TaskProgress>("task.progress", this.handleTaskProgress),
+        listenBackend<TaskResult>("task.result", this.handleTaskResult),
+        listenBackendRaw<LogPayload>("backend.log", this.handleBackendLog),
       ]);
       runInAction(() => {
         this._unlisteners = unlisteners;
       });
-      const logs = await sidecarLogs();
+
+      const logs = await backendLogs();
       runInAction(() => {
         for (const log of logs) {
-          rpcStore.addSidecarLog(log);
+          rpcStore.addBackendLog(log);
         }
       });
     } catch (error) {
@@ -72,10 +67,9 @@ class SidecarStore {
         this.lastError = error instanceof Error ? error.message : String(error);
       });
     }
-    
-    // 轮询检查进程状态
+
     try {
-      const running = await sidecarStatus();
+      const running = await backendStatus();
       runInAction(() => {
         if (this.state === "unknown") {
           this.state = running ? "running" : "stopped";
@@ -88,7 +82,7 @@ class SidecarStore {
     }
   }
 
-  private handleReady(payload: SidecarReadyPayload) {
+  private handleReady(payload: BackendReadyPayload) {
     runInAction(() => {
       this.state = "running";
       this.version = payload.version;
@@ -126,9 +120,6 @@ class SidecarStore {
   private handleTaskProgress(payload: TaskProgress) {
     runInAction(() => {
       const existing = this.tasks.get(payload.task_id);
-      // task.progress 理论上晚于 task.status 到达，但极少情况下两者顺序可能颠倒。
-      // 此时用合理默认值（"running" / "unknown"）暂存进度条数据，
-      // 待 task.status 到达后会整体覆盖更新，属于预期的降级行为。
       this.tasks.set(payload.task_id, {
         taskId: payload.task_id,
         method: existing?.method ?? "unknown",
@@ -162,16 +153,14 @@ class SidecarStore {
     });
   }
 
-  private handleSidecarLog(payload: LogPayload) {
-    rpcStore.addSidecarLog(payload);
+  private handleBackendLog(payload: LogPayload) {
+    rpcStore.addBackendLog(payload);
   }
 
-  // 动态修改状态的方法
-  setState(s: SidecarState) {
+  setState(s: BackendState) {
     this.state = s;
   }
 
-  // 组件销毁或断开连接时取消监听
   dispose() {
     for (const unlisten of this._unlisteners) {
       unlisten();
@@ -180,4 +169,4 @@ class SidecarStore {
   }
 }
 
-export const sidecarStore = new SidecarStore();
+export const backendStore = new BackendStore();

@@ -6,9 +6,9 @@
   "scripts": {
     "dev": "vite",
     "gen:types": "python scripts/gen_types.py",
-    "build:sidecar": "python scripts/build_sidecar.py",
+    "build:backend": "python scripts/build_backend.py",
     "build": "pnpm gen:types && tsc && vite build",
-    "build:release": "pnpm build:sidecar && pnpm build",
+    "build:release": "pnpm build:backend && pnpm build",
     "preview": "vite preview",
     "tauri": "tauri",
     "tauri:build": "pnpm tauri build"

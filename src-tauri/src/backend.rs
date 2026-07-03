@@ -18,7 +18,7 @@ use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::process::Command;
 use tokio::sync::{mpsc, watch};
 
-const MAX_SIDECAR_LOGS: usize = 500;
+const MAX_BACKEND_LOGS: usize = 500;
 
 /// stdin 消息发送端的共享类型别名。
 /// - Option::None  → 进程未运行，写入会立即报错
@@ -26,7 +26,7 @@ const MAX_SIDECAR_LOGS: usize = 500;
 pub type StdinTx = Arc<StdMutex<Option<mpsc::Sender<Vec<u8>>>>>;
 
 #[derive(Clone, Serialize)]
-pub struct SidecarLogPayload {
+pub struct BackendLogPayload {
     pub seq: u64,
     pub timestamp_ms: u64,
     pub level: &'static str,
@@ -35,7 +35,7 @@ pub struct SidecarLogPayload {
     pub message: String,
 }
 
-type SidecarLogBuffer = Arc<StdMutex<VecDeque<SidecarLogPayload>>>;
+type BackendLogBuffer = Arc<StdMutex<VecDeque<BackendLogPayload>>>;
 
 #[cfg(windows)]
 fn venv_python_path(venv_dir: PathBuf) -> PathBuf {
@@ -67,9 +67,9 @@ fn stderr_level(line: &str) -> &'static str {
     }
 }
 
-fn emit_sidecar_log(
+fn emit_backend_log(
     app: &AppHandle,
-    logs: &SidecarLogBuffer,
+    logs: &BackendLogBuffer,
     next_log_seq: &Arc<AtomicU64>,
     source: &'static str,
     stream: &'static str,
@@ -82,7 +82,7 @@ fn emit_sidecar_log(
         "error"
     };
 
-    let payload = SidecarLogPayload {
+    let payload = BackendLogPayload {
         seq: next_log_seq.fetch_add(1, Ordering::SeqCst) + 1,
         timestamp_ms: now_ms(),
         level,
@@ -93,15 +93,15 @@ fn emit_sidecar_log(
 
     if let Ok(mut buffer) = logs.lock() {
         buffer.push_back(payload.clone());
-        while buffer.len() > MAX_SIDECAR_LOGS {
+        while buffer.len() > MAX_BACKEND_LOGS {
             buffer.pop_front();
         }
     } else {
-        warn!("[SidecarManager] 写入 Sidecar 日志缓冲区失败");
+        warn!("[BackendRuntime] 写入 Backend 日志缓冲区失败");
     }
 
-    if let Err(e) = app.emit("sidecar://sidecar.log", payload) {
-        warn!("[SidecarManager] 转发 Sidecar 日志失败: {}", e);
+    if let Err(e) = app.emit("backend://backend.log", payload) {
+        warn!("[BackendRuntime] 转发 Backend 日志失败: {}", e);
     }
 }
 
@@ -147,19 +147,19 @@ fn take_remaining_line(buffer: &mut Vec<u8>) -> Option<String> {
 }
 
 fn handle_stdout_line(line: &str, on_message: &Arc<dyn Fn(Value) + Send + Sync>, source: &str) {
-    debug!("[sidecar stdout ({})] {}", source, line);
+    debug!("[backend stdout ({})] {}", source, line);
     match serde_json::from_str::<Value>(line) {
         Ok(msg) => (on_message)(msg),
-        Err(e) => warn!("[SidecarManager] JSON 解析失败: {} — 原始数据: {}", e, line),
+        Err(e) => warn!("[BackendRuntime] JSON 解析失败: {} — 原始数据: {}", e, line),
     }
 }
 
 /// Fix 2：stdin 写入已从 ActiveProcess 中解耦，由独立的 writer 任务负责；
 /// ActiveProcess 仅保留进程句柄用于 kill 操作。
 pub enum ActiveProcess {
-    /// 生产发布模式：Tauri 托管的二进制 Sidecar
+    /// 生产发布模式：Tauri 托管的二进制 Backend
     /// CommandChild::write 取 &mut self，kill 取 self，用 Arc<StdMutex<>> 共享给 writer 任务
-    Sidecar(Arc<StdMutex<CommandChild>>),
+    Backend(Arc<StdMutex<CommandChild>>),
     /// 本地开发模式：直连系统的 Python 解释器（stdin 已被 writer 任务独占消费）
     Dev {
         child: Box<tokio::process::Child>,
@@ -170,7 +170,7 @@ impl ActiveProcess {
     /// 统一抽象安全终止进程的方法
     pub fn kill(self) -> Result<()> {
         match self {
-            ActiveProcess::Sidecar(child_arc) => {
+            ActiveProcess::Backend(child_arc) => {
                 // 取出 CommandChild 所有权（Mutex 消费）再 kill
                 let child = Arc::try_unwrap(child_arc)
                     .map_err(|_| anyhow::anyhow!("CommandChild Arc 仍有其他持有者，无法 kill"))?
@@ -178,7 +178,7 @@ impl ActiveProcess {
                     .map_err(|_| anyhow::anyhow!("CommandChild Mutex 已中毒"))?;
                 child
                     .kill()
-                    .map_err(|e| anyhow::anyhow!("终止 Sidecar 失败: {}", e))?;
+                    .map_err(|e| anyhow::anyhow!("终止 Backend 失败: {}", e))?;
             }
             ActiveProcess::Dev { mut child } => {
                 let _ = child.start_kill();
@@ -188,27 +188,27 @@ impl ActiveProcess {
     }
 }
 
-/// 负责管理 Python Sidecar 进程的生命周期。
+/// 负责管理 Python Backend 进程的生命周期。
 ///
 /// Fix 1：就绪通知从 `Notify`（单 permit，并发唤醒存在丢失）升级为
 ///         `watch::channel`（所有 waiter 同时广播唤醒）。
 ///
 /// Fix 2：stdin 写入通道（`stdin_tx`）以 `Arc<StdMutex<Option<>>>` 独立暴露，
-///         使 `RpcClient` 直接持有并写入，完全不再需要锁住整个 `SidecarManager`。
-pub struct SidecarManager {
+///         使 `RpcClient` 直接持有并写入，完全不再需要锁住整个 `BackendRuntime`。
+pub struct BackendRuntime {
     child: Option<ActiveProcess>,
     app: AppHandle,
     running: Arc<AtomicBool>,
     /// 进程就绪广播发送端：发送 true = 就绪，false = 退出/停止。
     /// 包裹在 Arc 中以便背景任务持有引用。
     ready_tx: Arc<watch::Sender<bool>>,
-    logs: SidecarLogBuffer,
+    logs: BackendLogBuffer,
     next_log_seq: Arc<AtomicU64>,
-    /// 独立 stdin 写入通道：与 SidecarManager 锁解耦，RpcClient 可独立写入。
+    /// 独立 stdin 写入通道：与 BackendRuntime 锁解耦，RpcClient 可独立写入。
     stdin_tx: StdinTx,
 }
 
-impl SidecarManager {
+impl BackendRuntime {
     pub fn new(app: AppHandle) -> Self {
         let (ready_tx, _initial_rx) = watch::channel(false);
         Self {
@@ -216,7 +216,7 @@ impl SidecarManager {
             app,
             running: Arc::new(AtomicBool::new(false)),
             ready_tx: Arc::new(ready_tx),
-            logs: Arc::new(StdMutex::new(VecDeque::with_capacity(MAX_SIDECAR_LOGS))),
+            logs: Arc::new(StdMutex::new(VecDeque::with_capacity(MAX_BACKEND_LOGS))),
             next_log_seq: Arc::new(AtomicU64::new(0)),
             stdin_tx: Arc::new(StdMutex::new(None)),
         }
@@ -228,7 +228,7 @@ impl SidecarManager {
         self.ready_tx.subscribe()
     }
 
-    /// 返回 stdin 写入通道的共享引用，供 RpcClient 直接写入而无需锁住 SidecarManager（Fix 2 核心）。
+    /// 返回 stdin 写入通道的共享引用，供 RpcClient 直接写入而无需锁住 BackendRuntime（Fix 2 核心）。
     pub fn stdin_sender(&self) -> StdinTx {
         Arc::clone(&self.stdin_tx)
     }
@@ -277,7 +277,7 @@ impl SidecarManager {
             .unwrap_or_else(|| PathBuf::from("python"))
     }
 
-    /// 开发调试模式：直接调用本地 Python 解释器运行 sidecar 脚本。
+    /// 开发调试模式：直接调用本地 Python 解释器运行 backend 脚本。
     ///
     /// Fix 2：stdin 在此处被取出，交由独立的 writer 任务持有，不再存入 ActiveProcess。
     /// Fix 3：stdout 和 stderr 任务关闭时均触发 notify_exit（幂等），提高进程退出检测可靠性。
@@ -288,14 +288,14 @@ impl SidecarManager {
     ) -> Result<()> {
         let manifest_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
         let workspace_dir = manifest_dir.parent().unwrap_or(manifest_dir.as_path());
-        let sidecar_dir = workspace_dir.join("sidecar");
-        let sidecar_script = sidecar_dir.join("main.py");
+        let backend_dir = workspace_dir.join("backend");
+        let backend_script = backend_dir.join("main.py");
         let python = Self::resolve_dev_python();
-        info!("[SidecarManager] 开发模式 Python: {}", python.display());
+        info!("[BackendRuntime] 开发模式 Python: {}", python.display());
 
         let mut cmd = Command::new(&python);
-        cmd.arg(&sidecar_script)
-            .current_dir(&sidecar_dir)
+        cmd.arg(&backend_script)
+            .current_dir(&backend_dir)
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped());
@@ -304,7 +304,7 @@ impl SidecarManager {
             anyhow::anyhow!(
                 "无法拉起 Python 调试进程: python={}, script={}, error={}",
                 python.display(),
-                sidecar_script.display(),
+                backend_script.display(),
                 e
             )
         })?;
@@ -344,15 +344,15 @@ impl SidecarManager {
             let mut stdin = stdin;
             while let Some(bytes) = rx.recv().await {
                 if stdin.write_all(&bytes).await.is_err() {
-                    warn!("[SidecarManager] Dev stdin-writer: 写入失败，退出");
+                    warn!("[BackendRuntime] Dev stdin-writer: 写入失败，退出");
                     break;
                 }
                 if stdin.flush().await.is_err() {
-                    warn!("[SidecarManager] Dev stdin-writer: 刷新失败，退出");
+                    warn!("[BackendRuntime] Dev stdin-writer: 刷新失败，退出");
                     break;
                 }
             }
-            debug!("[SidecarManager] Dev stdin-writer 任务已退出");
+            debug!("[BackendRuntime] Dev stdin-writer 任务已退出");
         });
 
         // ── stdout reader 任务 ────────────────────────────────────────────────────────
@@ -366,7 +366,7 @@ impl SidecarManager {
             while let Ok(Some(line)) = reader.next_line().await {
                 handle_stdout_line(&line, &on_message_clone, "dev");
             }
-            info!("[SidecarManager] 开发模式 stdout 管道已关闭");
+            info!("[BackendRuntime] 开发模式 stdout 管道已关闭");
             Self::notify_exit(&running_stdout, &ready_tx_stdout, &stdin_tx_stdout, &on_exit_stdout);
         });
 
@@ -381,10 +381,10 @@ impl SidecarManager {
         tokio::spawn(async move {
             let mut reader = BufReader::new(stderr).lines();
             while let Ok(Some(line)) = reader.next_line().await {
-                info!("[sidecar stderr (dev)] {}", line);
-                emit_sidecar_log(&app, &logs, &next_log_seq, "dev", "stderr", line);
+                info!("[backend stderr (dev)] {}", line);
+                emit_backend_log(&app, &logs, &next_log_seq, "dev", "stderr", line);
             }
-            info!("[SidecarManager] 开发模式 stderr 管道已关闭");
+            info!("[BackendRuntime] 开发模式 stderr 管道已关闭");
             // Fix 3：stderr 关闭也视为进程退出信号（幂等，只触发一次）
             Self::notify_exit(&running_stderr, &ready_tx_stderr, &stdin_tx_stderr, &on_exit_stderr);
         });
@@ -392,21 +392,21 @@ impl SidecarManager {
         Ok(())
     }
 
-    /// 生产发布模式：拉起 PyInstaller 打包好的 Sidecar 二进制程序。
+    /// 生产发布模式：拉起 PyInstaller 打包好的 Backend 二进制程序。
     ///
     /// Fix 2：CommandChild 用 Arc 包裹共享于 writer 任务和 kill 路径；
-    ///         writer 任务独立写入，不再需要锁住 SidecarManager。
-    async fn start_release_sidecar(
+    ///         writer 任务独立写入，不再需要锁住 BackendRuntime。
+    async fn start_release_backend(
         &mut self,
         on_message: Arc<dyn Fn(Value) + Send + Sync>,
         on_exit: Arc<dyn Fn() + Send + Sync>,
     ) -> Result<()> {
         let shell = self.app.shell();
         let (mut rx, child) = shell
-            .sidecar("sidecar")
-            .map_err(|e| anyhow::anyhow!("创建 Sidecar 实例失败: {}", e))?
+            .sidecar("backend")
+            .map_err(|e| anyhow::anyhow!("创建 Backend 实例失败: {}", e))?
             .spawn()
-            .map_err(|e| anyhow::anyhow!("启动 Sidecar 进程失败: {}", e))?;
+            .map_err(|e| anyhow::anyhow!("启动 Backend 进程失败: {}", e))?;
 
         // CommandChild::write 取 &mut self，用 Arc<StdMutex<>> 共享给 writer 任务和 kill 路径
         let child_arc = Arc::new(StdMutex::new(child));
@@ -419,7 +419,7 @@ impl SidecarManager {
             *g = Some(tx);
         }
 
-        self.child = Some(ActiveProcess::Sidecar(child_arc));
+        self.child = Some(ActiveProcess::Backend(child_arc));
         self.running.store(true, Ordering::SeqCst);
         self.ready_tx.send(true).ok();
 
@@ -429,17 +429,17 @@ impl SidecarManager {
                 match child_for_writer.lock() {
                     Ok(mut child) => {
                         if child.write(&bytes).is_err() {
-                            warn!("[SidecarManager] Sidecar stdin-writer: 写入失败，退出");
+                            warn!("[BackendRuntime] Backend stdin-writer: 写入失败，退出");
                             break;
                         }
                     }
                     Err(_) => {
-                        warn!("[SidecarManager] Sidecar stdin-writer: CommandChild 锁已中毒");
+                        warn!("[BackendRuntime] Backend stdin-writer: CommandChild 锁已中毒");
                         break;
                     }
                 }
             }
-            debug!("[SidecarManager] Sidecar stdin-writer 任务已退出");
+            debug!("[BackendRuntime] Backend stdin-writer 任务已退出");
         });
 
         // ── 事件监听任务（stdout/stderr/exit）────────────────────────────────────────
@@ -456,49 +456,49 @@ impl SidecarManager {
                 match event {
                     CommandEvent::Stdout(chunk) => {
                         for line in take_complete_lines(&mut stdout_buffer, &chunk) {
-                            handle_stdout_line(&line, &on_message, "sidecar");
+                            handle_stdout_line(&line, &on_message, "backend");
                         }
                     }
                     CommandEvent::Stderr(chunk) => {
                         for line in take_complete_lines(&mut stderr_buffer, &chunk) {
-                            info!("[sidecar stderr] {}", line);
-                            emit_sidecar_log(
+                            info!("[backend stderr] {}", line);
+                            emit_backend_log(
                                 &app,
                                 &logs,
                                 &next_log_seq,
-                                "sidecar",
+                                "backend",
                                 "stderr",
                                 line,
                             );
                         }
                     }
                     CommandEvent::Error(e) => {
-                        error!("[SidecarManager] 进程管道错误: {}", e);
-                        emit_sidecar_log(
+                        error!("[BackendRuntime] 进程管道错误: {}", e);
+                        emit_backend_log(
                             &app,
                             &logs,
                             &next_log_seq,
-                            "sidecar",
+                            "backend",
                             "process",
                             e.to_string(),
                         );
                     }
                     CommandEvent::Terminated(status) => {
                         if let Some(line) = take_remaining_line(&mut stdout_buffer) {
-                            handle_stdout_line(&line, &on_message, "sidecar");
+                            handle_stdout_line(&line, &on_message, "backend");
                         }
                         if let Some(line) = take_remaining_line(&mut stderr_buffer) {
-                            info!("[sidecar stderr] {}", line);
-                            emit_sidecar_log(
+                            info!("[backend stderr] {}", line);
+                            emit_backend_log(
                                 &app,
                                 &logs,
                                 &next_log_seq,
-                                "sidecar",
+                                "backend",
                                 "stderr",
                                 line,
                             );
                         }
-                        info!("[SidecarManager] Sidecar 进程已退出: {:?}", status);
+                        info!("[BackendRuntime] Backend 进程已退出: {:?}", status);
                         Self::notify_exit(&running, &ready_tx, &stdin_tx, &on_exit);
                         break;
                     }
@@ -512,32 +512,32 @@ impl SidecarManager {
         Ok(())
     }
 
-    /// 启动 Python Sidecar 进程。
+    /// 启动 Python Backend 进程。
     pub async fn start(
         &mut self,
         on_message: Arc<dyn Fn(Value) + Send + Sync>,
         on_exit: Arc<dyn Fn() + Send + Sync>,
     ) -> Result<()> {
         if self.running.load(Ordering::SeqCst) {
-            warn!("[SidecarManager] Sidecar 进程已经在运行中");
+            warn!("[BackendRuntime] Backend 进程已经在运行中");
             return Ok(());
         }
 
         if self.child.take().is_some() {
-            debug!("[SidecarManager] 清理已退出的旧 Sidecar 句柄");
+            debug!("[BackendRuntime] 清理已退出的旧 Backend 句柄");
         }
 
         // 根据编译条件判定当前是开发模式还是打包发布模式
         if cfg!(debug_assertions) {
-            info!("[SidecarManager] 检测到开发模式，优先使用本地虚拟环境 Python 拉起脚本");
+            info!("[BackendRuntime] 检测到开发模式，优先使用本地虚拟环境 Python 拉起脚本");
             self.start_dev_process(on_message, on_exit).await
         } else {
-            info!("[SidecarManager] 检测到发布模式，拉起打包的 Sidecar 二进制程序");
-            self.start_release_sidecar(on_message, on_exit).await
+            info!("[BackendRuntime] 检测到发布模式，拉起打包的 Backend 二进制程序");
+            self.start_release_backend(on_message, on_exit).await
         }
     }
 
-    /// 停止正在运行的 Python Sidecar 进程。
+    /// 停止正在运行的 Python Backend 进程。
     ///
     /// Fix 1+2：同步广播 ready=false 并清空 stdin_tx，让所有等待者和写入者立即感知停止。
     pub fn stop(&mut self) -> Result<()> {
@@ -550,7 +550,7 @@ impl SidecarManager {
         }
         if let Some(child) = self.child.take() {
             child.kill()?;
-            info!("[SidecarManager] Sidecar 进程已被成功关闭");
+            info!("[BackendRuntime] Backend 进程已被成功关闭");
         }
         Ok(())
     }
@@ -560,7 +560,7 @@ impl SidecarManager {
         self.running.load(Ordering::SeqCst)
     }
 
-    pub fn log_snapshot(&self) -> Vec<SidecarLogPayload> {
+    pub fn log_snapshot(&self) -> Vec<BackendLogPayload> {
         self.logs
             .lock()
             .map(|buffer| buffer.iter().cloned().collect())
