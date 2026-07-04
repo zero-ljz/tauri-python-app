@@ -5,7 +5,7 @@ import path from "node:path";
 // @ts-expect-error 如果未安装 @types/node，此处可能会有类型警告，使用 ignore 忽略
 import process from "node:process";
 
-const host = process.env.TAURI_DEV_HOST;
+const host = process.env.TAURI_DEV_HOST || "127.0.0.1";
 
 export default defineConfig(() => ({
   plugins: [tailwindcss(), react()],
