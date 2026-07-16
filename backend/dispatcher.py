@@ -10,6 +10,12 @@ class RpcMethodNotFoundError(ValueError):
     pass
 
 
+class RpcInvalidParamsError(ValueError):
+    """RPC parameters failed method-level validation."""
+
+    pass
+
+
 class RpcDispatcher:
     """
     基于装饰器模式的 RPC 方法注册与动态分派处理器。
@@ -27,6 +33,8 @@ class RpcDispatcher:
                 ...
         """
         def decorator(func: Callable[..., Any]):
+            if name in self.handlers:
+                raise RuntimeError(f"RPC 方法 {name!r} 被重复注册")
             self.handlers[name] = func
             logger.debug("已注册 RPC 接口方法: %r 映射至 -> %s()", name, func.__name__)
             return func

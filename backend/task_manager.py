@@ -40,6 +40,7 @@ class TaskRegistry:
 
     def __init__(self) -> None:
         self._tasks: dict[str, TaskHandle] = {}
+        self._closed = False
 
     def _new_id(self) -> str:
         return str(uuid.uuid4())
@@ -124,6 +125,8 @@ class TaskRegistry:
         提交一个异步 I/O 协程任务。
         立即返回生成的 task_id，任务挂起在 asyncio 事件循环后台执行。
         """
+        if self._closed:
+            raise RuntimeError("task registry is shutting down")
         task_id = self._new_id()
         handle = TaskHandle(
             task_id=task_id,
@@ -133,7 +136,12 @@ class TaskRegistry:
         )
         self._tasks[task_id] = handle
 
-        coro = self._run_async(task_id, method, coro_factory())
+        try:
+            work = coro_factory()
+        except Exception:
+            self._tasks.pop(task_id, None)
+            raise
+        coro = self._run_async(task_id, method, work)
         asyncio_task = asyncio.create_task(coro, name=f"task-{task_id}")
         handle.asyncio_task = asyncio_task
 
@@ -149,6 +157,8 @@ class TaskRegistry:
         提交一个阻塞型或 CPU 密集型任务。
         立即返回生成的 task_id，任务会被指派到线程池中脱离主线程执行。
         """
+        if self._closed:
+            raise RuntimeError("task registry is shutting down")
         task_id = self._new_id()
         handle = TaskHandle(
             task_id=task_id,
@@ -230,6 +240,26 @@ class TaskRegistry:
         message: Optional[str] = None,
     ) -> None:
         """快捷封装方法：由业务层调用，向 Rust 主动推送某个任务的执行进度报文。"""
+        if task_id not in self._tasks:
+            logger.debug("忽略已结束任务的进度通知: %s", task_id)
+            return
         await send_notification("task.progress", TaskProgress(
             task_id=task_id, progress=progress, message=message
         ).model_dump())
+
+    async def shutdown(self) -> None:
+        """Cancel managed asyncio wrappers and reject new work during shutdown."""
+        self._closed = True
+        tasks = [
+            handle.asyncio_task
+            for handle in self._tasks.values()
+            if handle.asyncio_task is not None
+        ]
+        for task in tasks:
+            task.cancel()
+        if tasks:
+            await asyncio.gather(*tasks, return_exceptions=True)
+        self._tasks.clear()
+        # Running Python threads cannot be interrupted. backend.main performs a
+        # final process-level exit after EOF so they cannot outlive the sidecar.
+        _thread_pool.shutdown(wait=False, cancel_futures=True)

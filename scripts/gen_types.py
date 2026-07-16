@@ -6,7 +6,10 @@ import sys
 from pathlib import Path
 from typing import Any
 
-from _python_env import reexec_with_local_venv
+try:
+    from ._python_env import reexec_with_local_venv
+except ImportError:
+    from _python_env import reexec_with_local_venv
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -14,7 +17,8 @@ SCHEMA_PATH = ROOT / "src" / "types" / "schema.json"
 OUTPUT_PATH = ROOT / "src" / "types" / "generated.ts"
 
 
-reexec_with_local_venv(ROOT, "BACKEND_TYPES_REEXEC", (ROOT / ".venv", ROOT / "venv"))
+if __name__ == "__main__":
+    reexec_with_local_venv(ROOT, "BACKEND_TYPES_REEXEC", (ROOT / ".venv", ROOT / "venv"))
 
 sys.path.insert(0, str(ROOT))
 
@@ -26,6 +30,8 @@ from backend.models import (  # noqa: E402
     RpcResponse,
     BackendReadyPayload,
     TaskCancelResult,
+    TaskCancelParams,
+    TaskIdResult,
     TaskProgress,
     TaskResult,
     TaskStatus,
@@ -43,11 +49,21 @@ MODELS = {
     "TaskProgress": TaskProgress,
     "TaskSummary": TaskSummary,
     "TaskCancelResult": TaskCancelResult,
+    "TaskCancelParams": TaskCancelParams,
+    "TaskIdResult": TaskIdResult,
     "BackendReadyPayload": BackendReadyPayload,
     "LogPayload": LogPayload,
 }
 
 IDENT_RE = re.compile(r"^[A-Za-z_$][A-Za-z0-9_$]*$")
+
+RPC_METHODS = {
+    "echo": ("unknown", "unknown"),
+    "task.list": ("null", "Array<TaskSummary>"),
+    "task.cancel": ("TaskCancelParams", "TaskCancelResult"),
+    "task.long": ("null", "TaskIdResult"),
+    "task.blocking": ("null", "TaskIdResult"),
+}
 
 
 def ts_prop_name(name: str) -> str:
@@ -154,6 +170,20 @@ def main() -> None:
     for name, schema in schemas.items():
         lines.append(emit_type(name, schema).rstrip())
         lines.append("")
+
+    lines.append("export interface RpcMethodMap {")
+    for method, (params_type, result_type) in RPC_METHODS.items():
+        lines.append(
+            f"  {json.dumps(method)}: {{ params: {params_type}; result: {result_type} }};"
+        )
+    lines.extend([
+        "}",
+        "",
+        "export type RpcMethod = keyof RpcMethodMap;",
+        "export type RpcParams<M extends RpcMethod> = RpcMethodMap[M][\"params\"];",
+        "export type RpcResult<M extends RpcMethod> = RpcMethodMap[M][\"result\"];",
+        "",
+    ])
 
     OUTPUT_PATH.write_text("\n".join(lines).rstrip() + "\n", encoding="utf-8", newline="\n")
     print(f"Generated {OUTPUT_PATH}")

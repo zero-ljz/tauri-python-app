@@ -73,6 +73,14 @@ export interface TaskCancelResult {
   reason?: string | null;
 }
 
+export interface TaskCancelParams {
+  task_id: string;
+}
+
+export interface TaskIdResult {
+  task_id: string;
+}
+
 export interface BackendReadyPayload {
   version: string;
   capabilities?: Array<string>;
@@ -87,3 +95,15 @@ export interface LogPayload {
   message: string;
   context?: Record<string, unknown> | null;
 }
+
+export interface RpcMethodMap {
+  "echo": { params: unknown; result: unknown };
+  "task.list": { params: null; result: Array<TaskSummary> };
+  "task.cancel": { params: TaskCancelParams; result: TaskCancelResult };
+  "task.long": { params: null; result: TaskIdResult };
+  "task.blocking": { params: null; result: TaskIdResult };
+}
+
+export type RpcMethod = keyof RpcMethodMap;
+export type RpcParams<M extends RpcMethod> = RpcMethodMap[M]["params"];
+export type RpcResult<M extends RpcMethod> = RpcMethodMap[M]["result"];

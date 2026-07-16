@@ -2,6 +2,9 @@ import asyncio
 import time
 from backend.rpc import rpc
 from backend.task_manager import TaskRegistry
+from backend.dispatcher import RpcInvalidParamsError
+from backend.models import TaskCancelParams
+from pydantic import ValidationError
 
 
 @rpc.register("task.list")
@@ -13,10 +16,11 @@ async def handle_task_list(registry: TaskRegistry) -> list[dict]:
 @rpc.register("task.cancel")
 async def handle_task_cancel(params: dict, registry: TaskRegistry) -> dict:
     """Cancel a task by task_id."""
-    if not isinstance(params, dict) or "task_id" not in params:
-        raise ValueError("params must have 'task_id'")
-    task_id = params["task_id"]
-    return await registry.cancel(task_id)
+    try:
+        validated = TaskCancelParams.model_validate(params)
+    except ValidationError as error:
+        raise RpcInvalidParamsError("params must contain a non-empty task_id") from error
+    return await registry.cancel(validated.task_id)
 
 
 @rpc.register("task.long")

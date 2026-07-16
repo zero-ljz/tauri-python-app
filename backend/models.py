@@ -101,6 +101,16 @@ class TaskCancelResult(BaseModel):
     reason: Optional[str] = None
 
 
+class TaskCancelParams(BaseModel):
+    """Parameters accepted by task.cancel."""
+    task_id: str = Field(min_length=1)
+
+
+class TaskIdResult(BaseModel):
+    """Response returned when a background task is submitted."""
+    task_id: str
+
+
 # ─── 广播类状态通知数据模型 ─────────────────────────────────────────────────────
 
 class BackendReadyPayload(BaseModel):

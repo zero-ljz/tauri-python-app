@@ -35,6 +35,8 @@ def reexec_with_local_venv(root: Path, guard_env: str, venv_dirs: Iterable[Path]
 
     env = os.environ.copy()
     env[guard_env] = "1"
-    completed = subprocess.run([str(python), *sys.argv], cwd=root, env=env)
+    original_argv = getattr(sys, "orig_argv", None)
+    arguments = original_argv[1:] if original_argv else sys.argv
+    completed = subprocess.run([str(python), *arguments], cwd=root, env=env)
     raise SystemExit(completed.returncode)
 

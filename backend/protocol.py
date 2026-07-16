@@ -15,6 +15,11 @@ from backend.models import RpcNotification, RpcError
 
 logger = logging.getLogger(__name__)
 JsonRpcId = Union[str, int, None]
+MAX_FRAME_BYTES = 4 * 1024 * 1024
+
+# Keep a private protocol stream. backend.main redirects normal print() calls to
+# stderr after imports so accidental application output cannot corrupt NDJSON.
+_protocol_stdout = sys.stdout
 
 # 全局 stdout 锁：保证多协程并发写入标准输出时的线程安全，防止报文交错重叠
 _stdout_lock = asyncio.Lock()
@@ -24,8 +29,8 @@ async def write_message(obj: dict[str, Any]) -> None:
     """将字典序列化为单行 JSON 并追加换行符写入 stdout。"""
     line = json.dumps(obj, ensure_ascii=False) + "\n"
     async with _stdout_lock:
-        sys.stdout.write(line)
-        sys.stdout.flush()
+        _protocol_stdout.write(line)
+        _protocol_stdout.flush()
 
 
 async def send_response(id: JsonRpcId, result: Any) -> None:
@@ -67,10 +72,24 @@ async def stdin_reader(queue: asyncio.Queue[dict[str, Any]]) -> None:
         try:
             # Windows 的 ProactorEventLoop 对标准输入管道支持不稳定，使用线程读取
             # 可以避开 connect_read_pipe 在 PyInstaller/管道环境中的 WinError 6。
-            line_bytes = await asyncio.to_thread(sys.stdin.buffer.readline)
+            line_bytes = await asyncio.to_thread(
+                sys.stdin.buffer.readline,
+                MAX_FRAME_BYTES + 1,
+            )
             if not line_bytes:  # 读到 EOF，代表父进程已被关闭或终止
                 logger.info("标准输入流检测到 EOF — 开启安全退出流程")
                 break
+            if len(line_bytes) > MAX_FRAME_BYTES:
+                # Drain the oversized frame to the next newline before resuming,
+                # otherwise the remaining chunks would be parsed as new messages.
+                while line_bytes and not line_bytes.endswith(b"\n"):
+                    line_bytes = await asyncio.to_thread(
+                        sys.stdin.buffer.readline,
+                        MAX_FRAME_BYTES + 1,
+                    )
+                logger.warning("丢弃超过 %d 字节的入站报文", MAX_FRAME_BYTES)
+                await send_error(None, -32600, "Invalid Request: frame too large")
+                continue
             try:
                 line = line_bytes.decode("utf-8").strip()
             except UnicodeDecodeError as e:
@@ -90,13 +109,19 @@ async def stdin_reader(queue: asyncio.Queue[dict[str, Any]]) -> None:
             try:
                 queue.put_nowait(msg)
             except asyncio.QueueFull:
-                msg_id = msg.get("id") if isinstance(msg, dict) else None
                 logger.warning(
                     "入站消息队列已满（capacity=%d），丢弃消息: %.120r",
                     queue.maxsize,
                     line,
                 )
-                await send_error(msg_id, -32000, "Server busy: inbound queue full")
+                # JSON-RPC notifications never receive responses, including when
+                # the server is overloaded.
+                if isinstance(msg, dict) and "id" in msg:
+                    await send_error(
+                        msg.get("id"),
+                        -32000,
+                        "Server busy: inbound queue full",
+                    )
 
         except asyncio.CancelledError:
             break

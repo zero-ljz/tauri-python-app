@@ -8,7 +8,10 @@ import subprocess
 import sys
 from pathlib import Path
 
-from _python_env import reexec_with_local_venv
+try:
+    from ._python_env import reexec_with_local_venv
+except ImportError:
+    from _python_env import reexec_with_local_venv
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -51,13 +54,21 @@ def fallback_target() -> str:
 
 
 def resolve_target(cli_target: str | None) -> str:
-    return (
+    target = (
         cli_target
         or os.environ.get("CARGO_BUILD_TARGET")
         or os.environ.get("TARGET")
         or rust_host_triple()
         or fallback_target()
     )
+    host = rust_host_triple() or fallback_target()
+    if target != host:
+        raise RuntimeError(
+            "PyInstaller cannot cross-compile the backend: "
+            f"requested target={target}, build host={host}. "
+            "Build this target on a native CI runner with a matching Python architecture."
+        )
+    return target
 
 
 def executable_name(target: str) -> str:

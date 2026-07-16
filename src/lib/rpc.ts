@@ -1,7 +1,12 @@
 import { invoke } from "@tauri-apps/api/core";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import { rpcStore } from "@/stores/rpc.store";
-import type { LogPayload } from "@/types/generated";
+import type {
+  LogPayload,
+  RpcMethod,
+  RpcParams,
+  RpcResult,
+} from "@/types/generated";
 
 export type RpcEventHandler<T = unknown> = (payload: T) => void;
 
@@ -10,8 +15,26 @@ export interface RpcListenOptions {
 }
 
 function errorMessage(error: unknown): string {
+  if (typeof error === "object" && error !== null && "message" in error) {
+    const value = error as { code?: unknown; message?: unknown };
+    const message = String(value.message);
+    return value.code == null ? message : `${message} (code ${String(value.code)})`;
+  }
   return error instanceof Error ? error.message : String(error);
 }
+
+export interface BackendStatusPayload {
+  phase: "stopped" | "starting" | "ready" | "stopping" | "failed";
+  generation: number;
+  running: boolean;
+  ready: boolean;
+  version: string | null;
+  capabilities: string[];
+  last_error: string | null;
+}
+
+const backendEventName = (method: string) =>
+  `backend://${method.split(".").join("/")}`;
 
 class TauriRpcClient {
   private handlers = new Map<string, Set<RpcEventHandler>>();
@@ -21,36 +44,34 @@ class TauriRpcClient {
   async call<T = unknown>(method: string, params?: unknown, timeout?: number): Promise<T> {
     const finish = rpcStore.trackRequest(method, params ?? null);
 
-    let timeoutId: ReturnType<typeof setTimeout> | undefined;
-    const request = invoke<T>("backend_request", { method, params: params ?? null });
-
     try {
-      const result =
-        timeout == null
-          ? await request
-          : await Promise.race([
-              request,
-              new Promise<never>((_, reject) => {
-                timeoutId = setTimeout(
-                  () => reject(new Error(`RPC call timed out: ${method}`)),
-                  timeout
-                );
-              }),
-            ]);
+      const result = await invoke<T>("backend_request", {
+        method,
+        params: params ?? null,
+        timeoutMs: timeout,
+      });
       finish(result);
       return result;
     } catch (error) {
       finish(undefined, errorMessage(error));
       throw error;
-    } finally {
-      if (timeoutId !== undefined) {
-        clearTimeout(timeoutId);
-      }
     }
   }
 
-  async notify(method: string, params?: unknown): Promise<void> {
-    return invoke("backend_notify", { method, params: params ?? null });
+  async callKnown<M extends RpcMethod>(
+    method: M,
+    params: RpcParams<M>,
+    timeout?: number
+  ): Promise<RpcResult<M>> {
+    return this.call<RpcResult<M>>(method, params, timeout);
+  }
+
+  async notify(method: string, params?: unknown, timeout?: number): Promise<void> {
+    return invoke("backend_notify", {
+      method,
+      params: params ?? null,
+      timeoutMs: timeout,
+    });
   }
 
   async listen(
@@ -115,7 +136,7 @@ class TauriRpcClient {
     }
 
     this.trackNotifications.set(event, options.track ?? true);
-    const unlisten = listen<unknown>(`backend://${event}`, (message) => {
+    const unlisten = listen<unknown>(backendEventName(event), (message) => {
       if (this.trackNotifications.get(event) !== false) {
         rpcStore.addNotification(event, message.payload);
       }
@@ -126,7 +147,13 @@ class TauriRpcClient {
     });
 
     this.unlisteners.set(event, unlisten);
-    await unlisten;
+    try {
+      await unlisten;
+    } catch (error) {
+      this.unlisteners.delete(event);
+      this.trackNotifications.delete(event);
+      throw error;
+    }
   }
 
   private async unlistenOne(event: string): Promise<void> {
@@ -144,11 +171,11 @@ class TauriRpcClient {
 
 export const rpc = new TauriRpcClient();
 
-export const rpcCall = <T = unknown>(
-  method: string,
-  params?: unknown,
+export const rpcCall = <M extends RpcMethod>(
+  method: M,
+  params: RpcParams<M>,
   timeout?: number
-) => rpc.call<T>(method, params, timeout);
+) => rpc.callKnown(method, params, timeout);
 
 export const rpcNotify = (method: string, params?: unknown) => rpc.notify(method, params);
 export function rpcListen(
@@ -172,6 +199,8 @@ export function rpcUnlisten(event: string | string[]): Promise<void | Record<str
   return Array.isArray(event) ? rpc.unlisten(event) : rpc.unlisten(event);
 }
 
-export const backendStatus = () => invoke<boolean>("backend_status");
+export const backendStatus = () => invoke<BackendStatusPayload>("backend_status");
 export const backendLogs = () => invoke<LogPayload[]>("backend_logs");
+export const backendStart = () => invoke("backend_start");
 export const backendStop = () => invoke("backend_stop");
+export const backendRestart = () => invoke("backend_restart");

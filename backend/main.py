@@ -7,6 +7,7 @@ Python Backend 主入口程序。
 from __future__ import annotations
 import asyncio
 import logging
+import os
 import sys
 from pathlib import Path
 from typing import Any
@@ -32,12 +33,17 @@ logger = logging.getLogger(__name__)
 from backend.protocol import stdin_reader, send_response, send_error, send_notification
 from backend.task_manager import TaskRegistry
 from backend.models import BackendReadyPayload
-from backend.dispatcher import dispatcher, RpcMethodNotFoundError
+from backend.dispatcher import dispatcher, RpcInvalidParamsError, RpcMethodNotFoundError
 from backend.rpc import rpc
 
 # ─── 导入业务处理器以自动触发 @rpc.register 装饰器绑定 ───────────────────
 import backend.handlers.echo
 import backend.handlers.tasks
+
+# protocol.py captured the original stdout stream above. Redirect ordinary
+# print() calls (including most third-party Python output) to stderr so they do
+# not corrupt the NDJSON transport.
+sys.stdout = sys.stderr
 
 registry = TaskRegistry()
 MAX_INBOUND_QUEUE = 128
@@ -82,10 +88,14 @@ async def dispatch(msg: Any) -> None:
         logger.warning("执行 RPC 方法 %s 时未找到处理器: %s", method, e)
         if msg_has_id:
             await send_error(msg_id, -32601, str(e))
+    except RpcInvalidParamsError as e:
+        logger.warning("执行 RPC 方法 %s 时参数无效: %s", method, e)
+        if msg_has_id:
+            await send_error(msg_id, -32602, str(e))
     except Exception as e:
         logger.exception("执行 RPC 方法 %s 时发生内部异常: %s", method, e)
         if msg_has_id:
-            await send_error(msg_id, -32603, str(e))
+            await send_error(msg_id, -32603, "Internal error")
 
 
 # ─── 主异步工作循环 ───────────────────────────────────────────────────────────
@@ -93,20 +103,21 @@ async def dispatch(msg: Any) -> None:
 async def main() -> None:
     logger.info("Backend 脚本初始化...")
 
-    # 向 Rust 广播就绪通知，携带当前已装载的所有 RPC 方法清单作为能力表
-    await send_notification(
-        "backend.ready",
-        BackendReadyPayload(
-            version="0.1.0",
-            capabilities=rpc.methods,
-        ).model_dump(),
-    )
-
     # 启动后台 stdin 协程异步读取管道行流
     queue: asyncio.Queue[Any] = asyncio.Queue(maxsize=MAX_INBOUND_QUEUE)
     dispatch_slots = asyncio.Semaphore(MAX_CONCURRENT_DISPATCH)
     active_dispatch_tasks: set[asyncio.Task] = set()
     reader_task = asyncio.create_task(stdin_reader(queue), name="stdin-reader")
+
+    # Only announce readiness after imports, routing and the stdin reader are
+    # fully initialized. Rust does not accept RPC calls before this handshake.
+    await send_notification(
+        "backend.ready",
+        BackendReadyPayload(
+            version=os.environ.get("TAURI_APP_VERSION", "0.1.0"),
+            capabilities=rpc.methods,
+        ).model_dump(),
+    )
 
     logger.info("Backend 已进入主轮询事件循环")
 
@@ -153,8 +164,14 @@ async def main() -> None:
             task.cancel()
         if active_dispatch_tasks:
             await asyncio.gather(*active_dispatch_tasks, return_exceptions=True)
+        await registry.shutdown()
         logger.info("Backend 进程安全退出")
 
 
 if __name__ == "__main__":
     asyncio.run(main())
+    # ThreadPoolExecutor cannot interrupt a running blocking function and Python
+    # waits for worker threads during interpreter shutdown. EOF means the Tauri
+    # parent is gone, so force the dedicated sidecar to terminate now.
+    sys.stderr.flush()
+    os._exit(0)
