@@ -52,29 +52,27 @@ class RpcNotification(BaseModel):
     params: Any = None
 
 
+class ImplementationInfo(BaseModel):
+    name: str
+    version: str
+
+
+class InitializeParams(BaseModel):
+    protocol_version: str
+    client: ImplementationInfo
+    capabilities: dict[str, Any] = Field(default_factory=dict)
+
+
+class InitializeResult(BaseModel):
+    protocol_version: str
+    server: ImplementationInfo
+    capabilities: dict[str, Any] = Field(default_factory=dict)
+
+
 # ─── 任务调度机制专属数据负载模型 ───────────────────────────────────────────────
 
 TaskKind = Literal["async", "blocking"]
-
-
-class TaskStatus(BaseModel):
-    """任务运行时的状态快照模型"""
-    task_id: str
-    method: str
-    status: Literal["pending", "running", "done", "error", "cancelled"]
-    kind: Optional[TaskKind] = None
-    cancellable: Optional[bool] = None
-    cancel_requested: bool = False
-    progress: Optional[float] = Field(None, ge=0.0, le=1.0)
-    message: Optional[str] = None
-
-
-class TaskResult(BaseModel):
-    """任务终结时向主控端回执的最终计算结果包"""
-    task_id: str
-    method: str
-    result: Any = None
-    error: Optional[str] = None
+TaskState = Literal["queued", "running", "completed", "failed", "cancelled"]
 
 
 class TaskProgress(BaseModel):
@@ -84,14 +82,18 @@ class TaskProgress(BaseModel):
     message: Optional[str] = None
 
 
-class TaskSummary(BaseModel):
-    """任务列表查询时返回的活动任务摘要"""
+class TaskSnapshot(BaseModel):
+    """任务查询与 task.updated 通知使用的权威快照。"""
     task_id: str
     method: str
-    status: Literal["pending", "running", "done", "error", "cancelled"]
+    status: TaskState
     kind: TaskKind
     cancellable: bool
     cancel_requested: bool = False
+    progress: Optional[float] = Field(None, ge=0.0, le=1.0)
+    message: Optional[str] = None
+    result: Any = None
+    error: Optional[str] = None
 
 
 class TaskCancelResult(BaseModel):
@@ -106,6 +108,16 @@ class TaskCancelParams(BaseModel):
     task_id: str = Field(min_length=1)
 
 
+class TaskGetParams(BaseModel):
+    task_id: str = Field(min_length=1)
+
+
+class TaskRemoveResult(BaseModel):
+    task_id: str
+    removed: bool
+    reason: Optional[str] = None
+
+
 class TaskIdResult(BaseModel):
     """Response returned when a background task is submitted."""
     task_id: str
@@ -116,7 +128,8 @@ class TaskIdResult(BaseModel):
 class BackendReadyPayload(BaseModel):
     """Backend 启动自检就绪后，向 Rust 宣告能力的就绪通知负载"""
     version: str
-    capabilities: list[str] = []
+    protocol_version: str
+    capabilities: list[str] = Field(default_factory=list)
 
 
 class LogPayload(BaseModel):

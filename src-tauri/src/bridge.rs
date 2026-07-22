@@ -30,6 +30,14 @@ impl EventBridge {
 
     /// 接收从 Backend (stdout) 读取的每行 JSON 报文并进行解析和流向调度。
     pub fn handle_message(&self, generation: u64, msg: Value) {
+        if !self.health.is_current_generation(generation) {
+            warn!(
+                "[EventBridge] 忽略旧 Backend generation={} 的消息",
+                generation
+            );
+            return;
+        }
+
         let jsonrpc = msg.get("jsonrpc").and_then(|v| v.as_str()).unwrap_or("");
         if jsonrpc != "2.0" {
             warn!("[EventBridge] 忽略非 JSON-RPC 格式的消息: {:?}", msg);
@@ -62,14 +70,6 @@ impl EventBridge {
         if let Some(method) = msg.get("method").and_then(|v| v.as_str()) {
             let params = msg.get("params").cloned().unwrap_or(Value::Null);
             debug!("[EventBridge] 收到来自 Python 的通知: method={}", method);
-
-            if method == "backend.ready" && !self.health.mark_ready(generation, &params) {
-                warn!(
-                    "[EventBridge] 忽略过期或重复的 Backend ready 握手: generation={}",
-                    generation
-                );
-                return;
-            }
 
             // 将后端通知转发为前端监听的 Tauri 事件。
             let event_name = backend_event_name(method);

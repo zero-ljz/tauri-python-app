@@ -1,237 +1,186 @@
-"""
-任务运行时调度器：实现同步/异步双通道任务管理器。
-- 异步 I/O 协程任务 -> 直接挂载在 asyncio.create_task。
-- 密集型/阻塞式 CPU 或 IO 任务 -> 调用 loop.run_in_executor 挂载在 ThreadPoolExecutor 线程池。
-"""
+"""Bounded, queryable task registry for async and blocking backend work."""
 from __future__ import annotations
+
 import asyncio
 import logging
 import uuid
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
-from typing import Any, Callable, Awaitable, Optional
+from typing import Any, Awaitable, Callable, Optional
 
+from backend.models import TaskCancelResult, TaskProgress, TaskRemoveResult, TaskSnapshot
 from backend.protocol import send_notification
-from backend.models import TaskStatus, TaskResult, TaskProgress, TaskSummary, TaskCancelResult
 
 logger = logging.getLogger(__name__)
 
-# 为阻塞类任务建立专属的共享工作线程池，防止占满 asyncio 事件循环主线程
 _thread_pool = ThreadPoolExecutor(max_workers=4, thread_name_prefix="backend-worker")
+_TERMINAL_STATES = {"completed", "failed", "cancelled"}
 
 
 @dataclass
 class TaskHandle:
-    """任务句柄实体，持有任务运行时上下文以供中止等控制使用"""
     task_id: str
     method: str
     kind: str
     cancellable: bool
     asyncio_task: Optional[asyncio.Task] = field(default=None, repr=False)
-    status: str = "pending"
+    status: str = "queued"
     cancel_requested: bool = False
+    progress: Optional[float] = None
+    message: Optional[str] = None
+    result: Any = None
+    error: Optional[str] = None
 
 
 class TaskRegistry:
-    """
-    动态任务中心注册表：管理 task_id -> TaskHandle。
-    自动通过 Notification 通道向父进程推送执行进度及退出状态。
-    """
+    """Owns task state; queries are authoritative and notifications are hints."""
 
-    def __init__(self) -> None:
+    def __init__(self, max_history: int = 500) -> None:
         self._tasks: dict[str, TaskHandle] = {}
         self._closed = False
+        self._max_history = max_history
 
     def _new_id(self) -> str:
         return str(uuid.uuid4())
 
+    @staticmethod
+    def _snapshot(handle: TaskHandle) -> dict[str, Any]:
+        return TaskSnapshot(
+            task_id=handle.task_id,
+            method=handle.method,
+            status=handle.status,
+            kind=handle.kind,
+            cancellable=handle.cancellable,
+            cancel_requested=handle.cancel_requested,
+            progress=handle.progress,
+            message=handle.message,
+            result=handle.result,
+            error=handle.error,
+        ).model_dump()
+
+    async def _notify_updated(self, handle: TaskHandle) -> None:
+        await send_notification("task.updated", self._snapshot(handle))
+
+    def _trim_history(self) -> None:
+        overflow = len(self._tasks) - self._max_history
+        if overflow <= 0:
+            return
+        for task_id, handle in list(self._tasks.items()):
+            if overflow <= 0:
+                break
+            if handle.status in _TERMINAL_STATES:
+                self._tasks.pop(task_id, None)
+                overflow -= 1
+
     async def _run_async(
         self,
         task_id: str,
-        method: str,
         coro: Awaitable[Any],
     ) -> None:
-        """任务执行外层包装，捕获取消、完成、报错状态并自动通知 Rust。"""
-        handle = self._tasks.get(task_id)
-        if handle:
-            handle.status = "running"
-
-        # 推送任务进入 running 状态
-        await send_notification("task.status", TaskStatus(
-            task_id=task_id,
-            method=method,
-            status="running",
-            kind=handle.kind if handle else None,
-            cancellable=handle.cancellable if handle else None,
-            cancel_requested=handle.cancel_requested if handle else False,
-        ).model_dump())
+        handle = self._tasks[task_id]
+        handle.status = "running"
+        await self._notify_updated(handle)
 
         try:
-            result = await coro
-            if handle:
-                handle.status = "done"
-            await send_notification("task.status", TaskStatus(
-                task_id=task_id,
-                method=method,
-                status="done",
-                kind=handle.kind if handle else None,
-                cancellable=handle.cancellable if handle else None,
-                cancel_requested=handle.cancel_requested if handle else False,
-                progress=1.0,
-            ).model_dump())
-            # 执行成功，返回最终 result
-            await send_notification("task.result", TaskResult(
-                task_id=task_id, method=method, result=result
-            ).model_dump())
+            handle.result = await coro
+            handle.status = "completed"
+            handle.progress = 1.0
         except asyncio.CancelledError:
-            if handle:
-                handle.status = "cancelled"
-            # 任务被终止取消，发送 cancelled 状态通知
-            await send_notification("task.status", TaskStatus(
-                task_id=task_id,
-                method=method,
-                status="cancelled",
-                kind=handle.kind if handle else None,
-                cancellable=handle.cancellable if handle else None,
-                cancel_requested=True,
-            ).model_dump())
-        except Exception as e:
-            logger.exception("任务 %s 抛出异常崩溃: %s", task_id, e)
-            if handle:
-                handle.status = "error"
-            await send_notification("task.status", TaskStatus(
-                task_id=task_id,
-                method=method,
-                status="error",
-                kind=handle.kind if handle else None,
-                cancellable=handle.cancellable if handle else None,
-                cancel_requested=handle.cancel_requested if handle else False,
-                message=str(e),
-            ).model_dump())
-            # 执行报错，发送带有错误内容的结果报文
-            await send_notification("task.result", TaskResult(
-                task_id=task_id, method=method, error=str(e)
-            ).model_dump())
+            handle.status = "cancelled"
+            handle.cancel_requested = True
+        except Exception as error:
+            logger.exception("任务 %s 抛出异常: %s", task_id, error)
+            handle.status = "failed"
+            handle.error = str(error)
         finally:
-            # 执行完毕，从活动表清理
-            self._tasks.pop(task_id, None)
+            await self._notify_updated(handle)
+            self._trim_history()
 
     def submit_async(
         self,
         method: str,
         coro_factory: Callable[[], Awaitable[Any]],
     ) -> str:
-        """
-        提交一个异步 I/O 协程任务。
-        立即返回生成的 task_id，任务挂起在 asyncio 事件循环后台执行。
-        """
         if self._closed:
             raise RuntimeError("task registry is shutting down")
         task_id = self._new_id()
-        handle = TaskHandle(
-            task_id=task_id,
-            method=method,
-            kind="async",
-            cancellable=True,
-        )
+        handle = TaskHandle(task_id, method, "async", True)
         self._tasks[task_id] = handle
-
         try:
             work = coro_factory()
         except Exception:
             self._tasks.pop(task_id, None)
             raise
-        coro = self._run_async(task_id, method, work)
-        asyncio_task = asyncio.create_task(coro, name=f"task-{task_id}")
-        handle.asyncio_task = asyncio_task
-
-        logger.debug("已提交后台协程任务 %s [%s]", task_id, method)
+        handle.asyncio_task = asyncio.create_task(
+            self._run_async(task_id, work), name=f"task-{task_id}"
+        )
         return task_id
 
-    def submit_blocking(
-        self,
-        method: str,
-        fn: Callable[[], Any],
-    ) -> str:
-        """
-        提交一个阻塞型或 CPU 密集型任务。
-        立即返回生成的 task_id，任务会被指派到线程池中脱离主线程执行。
-        """
+    def submit_blocking(self, method: str, fn: Callable[[], Any]) -> str:
         if self._closed:
             raise RuntimeError("task registry is shutting down")
         task_id = self._new_id()
-        handle = TaskHandle(
-            task_id=task_id,
-            method=method,
-            kind="blocking",
-            cancellable=False,
-        )
+        handle = TaskHandle(task_id, method, "blocking", False)
         self._tasks[task_id] = handle
-
         loop = asyncio.get_running_loop()
 
-        async def _wrapper():
-            # 将阻塞函数投递到外部共享线程池
+        async def wrapper() -> Any:
             return await loop.run_in_executor(_thread_pool, fn)
 
-        coro = self._run_async(task_id, method, _wrapper())
-        asyncio_task = asyncio.create_task(coro, name=f"task-{task_id}")
-        handle.asyncio_task = asyncio_task
-
-        logger.debug("已提交线程池阻塞任务 %s [%s]", task_id, method)
+        handle.asyncio_task = asyncio.create_task(
+            self._run_async(task_id, wrapper()), name=f"task-{task_id}"
+        )
         return task_id
 
-    async def cancel(self, task_id: str) -> dict:
-        """根据 ID 请求取消任务；线程池阻塞任务无法被强制中断，会返回明确原因。"""
+    async def cancel(self, task_id: str) -> dict[str, Any]:
         handle = self._tasks.get(task_id)
-        if not handle:
+        if handle is None:
+            return TaskCancelResult(
+                task_id=task_id, cancelled=False, reason="task not found"
+            ).model_dump()
+        if handle.status in _TERMINAL_STATES:
             return TaskCancelResult(
                 task_id=task_id,
                 cancelled=False,
-                reason="task not found",
+                reason=f"task is already {handle.status}",
             ).model_dump()
 
         handle.cancel_requested = True
         if not handle.cancellable:
-            reason = "blocking task cannot be interrupted once it is running"
-            await send_notification("task.status", TaskStatus(
-                task_id=task_id,
-                method=handle.method,
-                status=handle.status,
-                kind=handle.kind,
-                cancellable=handle.cancellable,
-                cancel_requested=True,
-                message=reason,
-            ).model_dump())
+            handle.message = "blocking task cannot be interrupted once it is running"
+            await self._notify_updated(handle)
             return TaskCancelResult(
-                task_id=task_id,
-                cancelled=False,
-                reason=reason,
+                task_id=task_id, cancelled=False, reason=handle.message
             ).model_dump()
 
-        if handle and handle.asyncio_task:
+        if handle.asyncio_task is not None:
             handle.asyncio_task.cancel()
             return TaskCancelResult(task_id=task_id, cancelled=True).model_dump()
-
         return TaskCancelResult(
             task_id=task_id,
             cancelled=False,
             reason="task has no cancellable asyncio handle",
         ).model_dump()
 
-    def list_tasks(self) -> list[dict]:
-        """返回所有当前活动中的后台任务描述列表。"""
-        return [
-            TaskSummary(
-                task_id=h.task_id,
-                method=h.method,
-                status=h.status,
-                kind=h.kind,
-                cancellable=h.cancellable,
-                cancel_requested=h.cancel_requested,
+    def get_task(self, task_id: str) -> dict[str, Any] | None:
+        handle = self._tasks.get(task_id)
+        return self._snapshot(handle) if handle is not None else None
+
+    def list_tasks(self) -> list[dict[str, Any]]:
+        return [self._snapshot(handle) for handle in self._tasks.values()]
+
+    def remove(self, task_id: str) -> dict[str, Any]:
+        handle = self._tasks.get(task_id)
+        if handle is None:
+            return TaskRemoveResult(
+                task_id=task_id, removed=False, reason="task not found"
             ).model_dump()
-            for h in self._tasks.values()
-        ]
+        if handle.status not in _TERMINAL_STATES:
+            return TaskRemoveResult(
+                task_id=task_id, removed=False, reason="active task cannot be removed"
+            ).model_dump()
+        self._tasks.pop(task_id, None)
+        return TaskRemoveResult(task_id=task_id, removed=True).model_dump()
 
     async def send_progress(
         self,
@@ -239,27 +188,28 @@ class TaskRegistry:
         progress: float,
         message: Optional[str] = None,
     ) -> None:
-        """快捷封装方法：由业务层调用，向 Rust 主动推送某个任务的执行进度报文。"""
-        if task_id not in self._tasks:
-            logger.debug("忽略已结束任务的进度通知: %s", task_id)
+        handle = self._tasks.get(task_id)
+        if handle is None or handle.status in _TERMINAL_STATES:
+            logger.debug("忽略不存在或已结束任务的进度通知: %s", task_id)
             return
-        await send_notification("task.progress", TaskProgress(
-            task_id=task_id, progress=progress, message=message
-        ).model_dump())
+        handle.progress = progress
+        handle.message = message
+        await send_notification(
+            "task.progress",
+            TaskProgress(task_id=task_id, progress=progress, message=message).model_dump(),
+        )
 
     async def shutdown(self) -> None:
-        """Cancel managed asyncio wrappers and reject new work during shutdown."""
+        if self._closed:
+            return
         self._closed = True
         tasks = [
             handle.asyncio_task
             for handle in self._tasks.values()
-            if handle.asyncio_task is not None
+            if handle.asyncio_task is not None and handle.status not in _TERMINAL_STATES
         ]
         for task in tasks:
             task.cancel()
         if tasks:
             await asyncio.gather(*tasks, return_exceptions=True)
-        self._tasks.clear()
-        # Running Python threads cannot be interrupted. backend.main performs a
-        # final process-level exit after EOF so they cannot outlive the sidecar.
         _thread_pool.shutdown(wait=False, cancel_futures=True)

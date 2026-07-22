@@ -3,7 +3,7 @@ import time
 from backend.rpc import rpc
 from backend.task_manager import TaskRegistry
 from backend.dispatcher import RpcInvalidParamsError
-from backend.models import TaskCancelParams
+from backend.models import TaskCancelParams, TaskGetParams
 from pydantic import ValidationError
 
 
@@ -11,6 +11,25 @@ from pydantic import ValidationError
 async def handle_task_list(registry: TaskRegistry) -> list[dict]:
     """Return all active tasks."""
     return registry.list_tasks()
+
+
+def _task_id(params: dict) -> str:
+    try:
+        return TaskGetParams.model_validate(params).task_id
+    except ValidationError as error:
+        raise RpcInvalidParamsError("params must contain a non-empty task_id") from error
+
+
+@rpc.register("task.get")
+async def handle_task_get(params: dict, registry: TaskRegistry) -> dict | None:
+    """Return the authoritative snapshot for one task."""
+    return registry.get_task(_task_id(params))
+
+
+@rpc.register("task.remove")
+async def handle_task_remove(params: dict, registry: TaskRegistry) -> dict:
+    """Remove one terminal task from retained history."""
+    return registry.remove(_task_id(params))
 
 
 @rpc.register("task.cancel")

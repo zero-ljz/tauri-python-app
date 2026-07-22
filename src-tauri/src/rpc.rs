@@ -7,7 +7,7 @@ use std::time::Duration;
 use tokio::sync::{oneshot, watch};
 use uuid::Uuid;
 
-use crate::backend::StdinTx;
+use crate::backend::{StdinMessage, StdinTx};
 
 pub type RequestId = String;
 pub type RpcResult<T> = Result<T, RpcFailure>;
@@ -40,6 +40,10 @@ impl RpcFailure {
 
     fn timeout(method: &str) -> Self {
         Self::new(-32002, format!("RPC 请求超时: {method}"))
+    }
+
+    fn transport(message: impl Into<String>) -> Self {
+        Self::new(-32003, message)
     }
 
     fn internal(message: impl Into<String>) -> Self {
@@ -104,47 +108,78 @@ impl RpcClient {
             .map_err(|_| RpcFailure::unavailable("Backend 就绪通知通道已关闭"))
     }
 
-    pub async fn request(
+    fn encode_message(method: &str, id: Option<&str>, params: Option<Value>) -> RpcResult<Vec<u8>> {
+        if params
+            .as_ref()
+            .is_some_and(|value| !value.is_object() && !value.is_array())
+        {
+            return Err(RpcFailure::new(
+                -32602,
+                "JSON-RPC params 必须是 object、array 或省略",
+            ));
+        }
+
+        let mut message = serde_json::Map::new();
+        message.insert("jsonrpc".to_string(), Value::String("2.0".to_string()));
+        if let Some(id) = id {
+            message.insert("id".to_string(), Value::String(id.to_string()));
+        }
+        message.insert("method".to_string(), Value::String(method.to_string()));
+        if let Some(params) = params {
+            message.insert("params".to_string(), params);
+        }
+
+        let mut line = serde_json::to_vec(&Value::Object(message))
+            .map_err(|error| RpcFailure::internal(format!("RPC 消息序列化失败: {error}")))?;
+        line.push(b'\n');
+        Ok(line)
+    }
+
+    async fn write_line(&self, line: Vec<u8>) -> RpcResult<()> {
+        let sender = {
+            let guard = self
+                .stdin_tx
+                .lock()
+                .map_err(|_| RpcFailure::internal("stdin_tx 锁已中毒"))?;
+            guard
+                .as_ref()
+                .cloned()
+                .ok_or_else(|| RpcFailure::unavailable("Backend stdin 通道已关闭"))?
+        };
+        let (written, confirmation) = oneshot::channel();
+        sender
+            .send(StdinMessage {
+                bytes: line,
+                written,
+            })
+            .await
+            .map_err(|_| RpcFailure::unavailable("Backend stdin 写入队列已关闭"))?;
+        confirmation
+            .await
+            .map_err(|_| RpcFailure::transport("Backend stdin writer 意外退出"))?
+            .map_err(|error| RpcFailure::transport(format!("Backend stdin 写入失败: {error}")))
+    }
+
+    async fn request_inner(
         &self,
         method: &str,
         params: Option<Value>,
         deadline: Duration,
+        require_ready: bool,
     ) -> RpcResult<Value> {
         let id = Uuid::new_v4().to_string();
         let request_id = id.clone();
         let operation = async {
-            self.wait_until_ready().await?;
+            if require_ready {
+                self.wait_until_ready().await?;
+            }
 
-            let message = serde_json::json!({
-                "jsonrpc": "2.0",
-                "id": id,
-                "method": method,
-                "params": params.unwrap_or(Value::Null),
-            });
-            let mut line = serde_json::to_vec(&message)
-                .map_err(|error| RpcFailure::internal(format!("RPC 消息序列化失败: {error}")))?;
-            line.push(b'\n');
-
+            let line = Self::encode_message(method, Some(&id), params)?;
             let (tx, rx) = oneshot::channel();
             self.pending
                 .insert(request_id.clone(), PendingRequest { tx });
 
-            let sender = {
-                let guard = self
-                    .stdin_tx
-                    .lock()
-                    .map_err(|_| RpcFailure::internal("stdin_tx 锁已中毒"))?;
-                guard
-                    .as_ref()
-                    .cloned()
-                    .ok_or_else(|| RpcFailure::unavailable("Backend stdin 通道已关闭"))?
-            };
-
-            sender
-                .send(line)
-                .await
-                .map_err(|_| RpcFailure::unavailable("Backend stdin 写入队列已关闭"))?;
-
+            self.write_line(line).await?;
             rx.await
                 .map_err(|_| RpcFailure::unavailable("RPC 响应通道意外关闭"))?
         };
@@ -156,42 +191,60 @@ impl RpcClient {
         result
     }
 
+    pub async fn request(
+        &self,
+        method: &str,
+        params: Option<Value>,
+        deadline: Duration,
+    ) -> RpcResult<Value> {
+        self.request_inner(method, params, deadline, true).await
+    }
+
+    pub async fn request_before_ready(
+        &self,
+        method: &str,
+        params: Option<Value>,
+        deadline: Duration,
+    ) -> RpcResult<Value> {
+        self.request_inner(method, params, deadline, false).await
+    }
+
+    async fn notify_inner(
+        &self,
+        method: &str,
+        params: Option<Value>,
+        deadline: Duration,
+        require_ready: bool,
+    ) -> RpcResult<()> {
+        let operation = async {
+            if require_ready {
+                self.wait_until_ready().await?;
+            }
+            self.write_line(Self::encode_message(method, None, params)?)
+                .await
+        };
+
+        tokio::time::timeout(deadline, operation)
+            .await
+            .unwrap_or_else(|_| Err(RpcFailure::timeout(method)))
+    }
+
     pub async fn notify(
         &self,
         method: &str,
         params: Option<Value>,
         deadline: Duration,
     ) -> RpcResult<()> {
-        let operation = async {
-            self.wait_until_ready().await?;
-            let message = serde_json::json!({
-                "jsonrpc": "2.0",
-                "method": method,
-                "params": params.unwrap_or(Value::Null),
-            });
-            let mut line = serde_json::to_vec(&message)
-                .map_err(|error| RpcFailure::internal(format!("RPC 通知序列化失败: {error}")))?;
-            line.push(b'\n');
+        self.notify_inner(method, params, deadline, true).await
+    }
 
-            let sender = {
-                let guard = self
-                    .stdin_tx
-                    .lock()
-                    .map_err(|_| RpcFailure::internal("stdin_tx 锁已中毒"))?;
-                guard
-                    .as_ref()
-                    .cloned()
-                    .ok_or_else(|| RpcFailure::unavailable("Backend stdin 通道已关闭"))?
-            };
-            sender
-                .send(line)
-                .await
-                .map_err(|_| RpcFailure::unavailable("Backend stdin 写入队列已关闭"))
-        };
-
-        tokio::time::timeout(deadline, operation)
-            .await
-            .unwrap_or_else(|_| Err(RpcFailure::timeout(method)))
+    pub async fn notify_before_ready(
+        &self,
+        method: &str,
+        params: Option<Value>,
+        deadline: Duration,
+    ) -> RpcResult<()> {
+        self.notify_inner(method, params, deadline, false).await
     }
 
     pub fn resolve_response(&self, id: &str, result: RpcResult<Value>) {
@@ -216,5 +269,41 @@ mod tests {
             .await
             .expect_err("request should time out while backend is not ready");
         assert_eq!(error.code, -32002);
+    }
+
+    #[tokio::test]
+    async fn notification_waits_for_actual_writer_confirmation() {
+        let (sender, mut receiver) = tokio::sync::mpsc::channel(1);
+        let stdin = Arc::new(StdMutex::new(Some(sender)));
+        let (_ready_tx, ready_rx) = watch::channel(true);
+        let client = RpcClient::new(stdin, ready_rx);
+
+        let writer = tokio::spawn(async move {
+            let message: StdinMessage = receiver.recv().await.unwrap();
+            let value: Value = serde_json::from_slice(&message.bytes).unwrap();
+            assert_eq!(value["method"], "initialized");
+            assert!(value.get("params").is_none());
+            message.written.send(Ok(())).unwrap();
+        });
+
+        client
+            .notify("initialized", None, Duration::from_secs(1))
+            .await
+            .unwrap();
+        writer.await.unwrap();
+    }
+
+    #[test]
+    fn params_are_omitted_when_absent() {
+        let encoded = RpcClient::encode_message("task.list", Some("1"), None).unwrap();
+        let message: Value = serde_json::from_slice(&encoded).unwrap();
+        assert!(message.get("params").is_none());
+    }
+
+    #[test]
+    fn scalar_params_are_rejected() {
+        let error = RpcClient::encode_message("echo", Some("1"), Some(Value::Null))
+            .expect_err("null params are not valid JSON-RPC structured params");
+        assert_eq!(error.code, -32602);
     }
 }

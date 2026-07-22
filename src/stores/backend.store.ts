@@ -5,8 +5,7 @@ import type {
   BackendReadyPayload,
   LogPayload,
   TaskProgress,
-  TaskResult,
-  TaskStatus,
+  TaskSnapshot,
 } from "@/types/generated";
 
 export type BackendState =
@@ -20,8 +19,8 @@ export type BackendState =
 export interface TrackedTask {
   taskId: string;
   method: string;
-  status: TaskStatus["status"];
-  kind?: TaskStatus["kind"];
+  status: TaskSnapshot["status"];
+  kind?: TaskSnapshot["kind"];
   cancellable?: boolean | null;
   cancelRequested: boolean;
   progress?: number | null;
@@ -54,17 +53,15 @@ class BackendStore {
     const trackedEvents = [
       "backend.ready",
       "backend.exited",
-      "task.status",
+      "task.updated",
       "task.progress",
-      "task.result",
     ];
     const rawEvents = ["backend.log"];
     const offHandlers = [
       rpc.on<BackendReadyPayload>("backend.ready", this.handleReady),
       rpc.on<{ reason?: string; recoverable?: boolean }>("backend.exited", this.handleExited),
-      rpc.on<TaskStatus>("task.status", this.handleTaskStatus),
+      rpc.on<TaskSnapshot>("task.updated", this.handleTaskUpdated),
       rpc.on<TaskProgress>("task.progress", this.handleTaskProgress),
-      rpc.on<TaskResult>("task.result", this.handleTaskResult),
       rpc.on<LogPayload>("backend.log", this.handleBackendLog),
     ];
 
@@ -114,6 +111,9 @@ class BackendStore {
         this.capabilities = status.capabilities;
         this.lastError = status.last_error;
       });
+      if (status.ready) {
+        await this.syncTasks();
+      }
     } catch {
       runInAction(() => {
         this.state = "error";
@@ -133,6 +133,7 @@ class BackendStore {
         this._restartTimer = null;
       }
     });
+    void this.syncTasks();
   }
 
   private handleExited(payload: { reason?: string; recoverable?: boolean }) {
@@ -140,7 +141,12 @@ class BackendStore {
       this.state = "stopped";
       this.lastError = payload.reason ?? null;
       this.capabilities = [];
+      this.tasks.clear();
     });
+    if (!payload.recoverable && this._restartTimer !== null) {
+      clearTimeout(this._restartTimer);
+      this._restartTimer = null;
+    }
     if (payload.recoverable) {
       this.scheduleRestart();
     }
@@ -165,20 +171,19 @@ class BackendStore {
     }, delay);
   }
 
-  private handleTaskStatus(payload: TaskStatus) {
+  private handleTaskUpdated(payload: TaskSnapshot) {
     runInAction(() => {
-      const existing = this.tasks.get(payload.task_id);
       this.setTrackedTask(payload.task_id, {
         taskId: payload.task_id,
         method: payload.method,
         status: payload.status,
-        kind: payload.kind ?? existing?.kind,
-        cancellable: payload.cancellable ?? existing?.cancellable,
-        cancelRequested: payload.cancel_requested ?? existing?.cancelRequested ?? false,
-        progress: payload.progress ?? existing?.progress,
-        message: payload.message ?? existing?.message,
-        result: existing?.result,
-        error: existing?.error,
+        kind: payload.kind,
+        cancellable: payload.cancellable,
+        cancelRequested: payload.cancel_requested ?? false,
+        progress: payload.progress,
+        message: payload.message,
+        result: payload.result,
+        error: payload.error,
       });
     });
   }
@@ -201,22 +206,34 @@ class BackendStore {
     });
   }
 
-  private handleTaskResult(payload: TaskResult) {
-    runInAction(() => {
-      const existing = this.tasks.get(payload.task_id);
-      this.setTrackedTask(payload.task_id, {
-        taskId: payload.task_id,
-        method: payload.method,
-        status: payload.error != null ? "error" : "done",
-        kind: existing?.kind,
-        cancellable: existing?.cancellable,
-        cancelRequested: existing?.cancelRequested ?? false,
-        progress: payload.error != null ? existing?.progress : 1,
-        message: existing?.message,
-        result: payload.result,
-        error: payload.error,
+  private async syncTasks() {
+    try {
+      const snapshots = await rpc.callKnown("task.list", null);
+      runInAction(() => {
+        this.tasks.clear();
+        for (const snapshot of snapshots) {
+          this.setTrackedTask(snapshot.task_id, {
+            taskId: snapshot.task_id,
+            method: snapshot.method,
+            status: snapshot.status,
+            kind: snapshot.kind,
+            cancellable: snapshot.cancellable,
+            cancelRequested: snapshot.cancel_requested ?? false,
+            progress: snapshot.progress,
+            message: snapshot.message,
+            result: snapshot.result,
+            error: snapshot.error,
+          });
+        }
       });
-    });
+    } catch (error) {
+      rpcStore.addBackendLog({
+        level: "warning",
+        stream: "process",
+        source: "frontend",
+        message: `Failed to synchronize tasks: ${error instanceof Error ? error.message : String(error)}`,
+      });
+    }
   }
 
   private handleBackendLog(payload: LogPayload) {

@@ -42,12 +42,13 @@ class TauriRpcClient {
   private trackNotifications = new Map<string, boolean>();
 
   async call<T = unknown>(method: string, params?: unknown, timeout?: number): Promise<T> {
-    const finish = rpcStore.trackRequest(method, params ?? null);
+    const structuredParams = params == null ? undefined : params;
+    const finish = rpcStore.trackRequest(method, structuredParams);
 
     try {
       const result = await invoke<T>("backend_request", {
         method,
-        params: params ?? null,
+        ...(structuredParams === undefined ? {} : { params: structuredParams }),
         timeoutMs: timeout,
       });
       finish(result);
@@ -67,9 +68,10 @@ class TauriRpcClient {
   }
 
   async notify(method: string, params?: unknown, timeout?: number): Promise<void> {
+    const structuredParams = params == null ? undefined : params;
     return invoke("backend_notify", {
       method,
-      params: params ?? null,
+      ...(structuredParams === undefined ? {} : { params: structuredParams }),
       timeoutMs: timeout,
     });
   }

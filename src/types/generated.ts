@@ -34,37 +34,23 @@ export interface RpcNotification {
   params?: unknown;
 }
 
-export interface TaskStatus {
-  task_id: string;
-  method: string;
-  status: "pending" | "running" | "done" | "error" | "cancelled";
-  kind?: "async" | "blocking" | null;
-  cancellable?: boolean | null;
-  cancel_requested?: boolean;
-  progress?: number | null;
-  message?: string | null;
-}
-
-export interface TaskResult {
-  task_id: string;
-  method: string;
-  result?: unknown;
-  error?: string | null;
-}
-
 export interface TaskProgress {
   task_id: string;
   progress: number;
   message?: string | null;
 }
 
-export interface TaskSummary {
+export interface TaskSnapshot {
   task_id: string;
   method: string;
-  status: "pending" | "running" | "done" | "error" | "cancelled";
+  status: "queued" | "running" | "completed" | "failed" | "cancelled";
   kind: "async" | "blocking";
   cancellable: boolean;
   cancel_requested?: boolean;
+  progress?: number | null;
+  message?: string | null;
+  result?: unknown;
+  error?: string | null;
 }
 
 export interface TaskCancelResult {
@@ -77,12 +63,23 @@ export interface TaskCancelParams {
   task_id: string;
 }
 
+export interface TaskGetParams {
+  task_id: string;
+}
+
+export interface TaskRemoveResult {
+  task_id: string;
+  removed: boolean;
+  reason?: string | null;
+}
+
 export interface TaskIdResult {
   task_id: string;
 }
 
 export interface BackendReadyPayload {
   version: string;
+  protocol_version: string;
   capabilities?: Array<string>;
 }
 
@@ -98,7 +95,9 @@ export interface LogPayload {
 
 export interface RpcMethodMap {
   "echo": { params: unknown; result: unknown };
-  "task.list": { params: null; result: Array<TaskSummary> };
+  "task.list": { params: null; result: Array<TaskSnapshot> };
+  "task.get": { params: TaskGetParams; result: TaskSnapshot | null };
+  "task.remove": { params: TaskGetParams; result: TaskRemoveResult };
   "task.cancel": { params: TaskCancelParams; result: TaskCancelResult };
   "task.long": { params: null; result: TaskIdResult };
   "task.blocking": { params: null; result: TaskIdResult };

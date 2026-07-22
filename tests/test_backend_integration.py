@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import io
 import json
 import subprocess
 import sys
@@ -13,7 +14,7 @@ ROOT = Path(__file__).resolve().parents[1]
 
 
 class BackendProcess:
-    def __init__(self) -> None:
+    def __init__(self, initialize: bool = True) -> None:
         self.process = subprocess.Popen(
             [sys.executable, "-m", "backend.main"],
             cwd=ROOT,
@@ -24,7 +25,17 @@ class BackendProcess:
             encoding="utf-8",
         )
         try:
-            self.ready = self.read()
+            if initialize:
+                self.initialize = self.request(
+                    "initialize-1",
+                    "initialize",
+                    {
+                        "protocol_version": "1.0",
+                        "client": {"name": "integration-tests", "version": "1.0"},
+                        "capabilities": {},
+                    },
+                )
+                self.notify("initialized")
         except BaseException:
             self.cleanup()
             raise
@@ -39,16 +50,15 @@ class BackendProcess:
 
     def request(self, request_id: str, method: str, params=None) -> dict:
         assert self.process.stdin is not None
+        message = {
+            "jsonrpc": "2.0",
+            "id": request_id,
+            "method": method,
+        }
+        if params is not None:
+            message["params"] = params
         self.process.stdin.write(
-            json.dumps(
-                {
-                    "jsonrpc": "2.0",
-                    "id": request_id,
-                    "method": method,
-                    "params": params,
-                }
-            )
-            + "\n"
+            json.dumps(message) + "\n"
         )
         self.process.stdin.flush()
         while True:
@@ -56,11 +66,25 @@ class BackendProcess:
             if message.get("id") == request_id:
                 return message
 
+    def notify(self, method: str, params=None) -> None:
+        assert self.process.stdin is not None
+        message = {"jsonrpc": "2.0", "method": method}
+        if params is not None:
+            message["params"] = params
+        self.process.stdin.write(json.dumps(message) + "\n")
+        self.process.stdin.flush()
+
     def close_stdin(self) -> None:
         if self.process.stdin and not self.process.stdin.closed:
             self.process.stdin.close()
 
     def cleanup(self) -> None:
+        if self.process.poll() is None and self.process.stdin and not self.process.stdin.closed:
+            try:
+                self.request("shutdown-1", "backend.shutdown")
+                self.notify("backend.exit")
+            except (BrokenPipeError, OSError, AssertionError):
+                pass
         self.close_stdin()
         try:
             self.process.wait(timeout=3)
@@ -81,8 +105,8 @@ class BackendIntegrationTests(unittest.TestCase):
         self.backend.cleanup()
 
     def test_ready_and_echo(self) -> None:
-        self.assertEqual(self.backend.ready["method"], "backend.ready")
-        capabilities = self.backend.ready["params"]["capabilities"]
+        self.assertEqual(self.backend.initialize["result"]["protocol_version"], "1.0")
+        capabilities = self.backend.initialize["result"]["capabilities"]["methods"]
         self.assertIn("echo", capabilities)
 
         response = self.backend.request("echo-1", "echo", {"ok": True})
@@ -94,6 +118,15 @@ class BackendIntegrationTests(unittest.TestCase):
 
         invalid = self.backend.request("cancel-1", "task.cancel", {})
         self.assertEqual(invalid["error"]["code"], -32602)
+
+    def test_task_snapshots_are_authoritative(self) -> None:
+        response = self.backend.request("blocking-1", "task.blocking")
+        task_id = response["result"]["task_id"]
+        snapshot = self.backend.request("get-1", "task.get", {"task_id": task_id})
+        self.assertEqual(snapshot["result"]["task_id"], task_id)
+        self.assertIn(snapshot["result"]["status"], {"queued", "running"})
+        listed = self.backend.request("list-1", "task.list")
+        self.assertIn(task_id, {task["task_id"] for task in listed["result"]})
 
     def test_blocking_task_does_not_hold_process_after_parent_eof(self) -> None:
         response = self.backend.request("blocking-1", "task.blocking")
@@ -124,6 +157,78 @@ class ContractTests(unittest.TestCase):
         ):
             with self.assertRaisesRegex(RuntimeError, "cannot cross-compile"):
                 build_backend.resolve_target("aarch64-apple-darwin")
+
+
+class SessionProtocolTests(unittest.TestCase):
+    def test_application_calls_are_rejected_before_initialize(self) -> None:
+        backend = BackendProcess(initialize=False)
+        try:
+            response = backend.request("echo-before-init", "echo", {"ok": True})
+            self.assertEqual(response["error"]["code"], -32002)
+        finally:
+            backend.cleanup()
+
+    def test_incompatible_protocol_version_is_rejected(self) -> None:
+        backend = BackendProcess(initialize=False)
+        try:
+            response = backend.request(
+                "bad-initialize",
+                "initialize",
+                {
+                    "protocol_version": "999.0",
+                    "client": {"name": "integration-tests", "version": "1.0"},
+                    "capabilities": {},
+                },
+            )
+            self.assertEqual(response["error"]["code"], -32004)
+        finally:
+            backend.cleanup()
+
+
+class TaskRegistryTests(unittest.IsolatedAsyncioTestCase):
+    async def test_completed_tasks_remain_queryable_until_removed(self) -> None:
+        from backend.task_manager import TaskRegistry
+
+        registry = TaskRegistry()
+
+        async def work() -> dict:
+            return {"ok": True}
+
+        with mock.patch("backend.task_manager.send_notification", new=mock.AsyncMock()):
+            task_id = registry.submit_async("task.test", work)
+            task = registry._tasks[task_id].asyncio_task
+            assert task is not None
+            await task
+
+        snapshot = registry.get_task(task_id)
+        self.assertIsNotNone(snapshot)
+        self.assertEqual(snapshot["status"], "completed")
+        self.assertEqual(snapshot["result"], {"ok": True})
+        self.assertTrue(registry.remove(task_id)["removed"])
+        self.assertIsNone(registry.get_task(task_id))
+
+
+class ProtocolWriterTests(unittest.IsolatedAsyncioTestCase):
+    async def test_oversized_response_becomes_structured_error(self) -> None:
+        from backend import protocol
+
+        original_stdout = protocol._protocol_stdout
+        capture = io.BytesIO()
+        protocol._protocol_stdout = capture
+        try:
+            await protocol.start_writer()
+            await protocol.send_response("large", "x" * protocol.MAX_FRAME_BYTES)
+            await protocol.stop_writer()
+        finally:
+            if protocol._writer is not None:
+                await protocol.stop_writer()
+            protocol._protocol_stdout = original_stdout
+
+        frame = capture.getvalue().removesuffix(b"\n")
+        self.assertLessEqual(len(frame), protocol.MAX_FRAME_BYTES)
+        response = json.loads(frame)
+        self.assertEqual(response["id"], "large")
+        self.assertEqual(response["error"]["code"], -32005)
 
 
 if __name__ == "__main__":

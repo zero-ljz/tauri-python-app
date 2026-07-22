@@ -14,12 +14,17 @@ use crate::rpc::{RpcClient, RpcFailure};
 
 const DEFAULT_RPC_TIMEOUT_MS: u64 = 30_000;
 const MAX_RPC_TIMEOUT_MS: u64 = 300_000;
+const SESSION_PROTOCOL_VERSION: &str = "1.0";
+const INITIALIZE_TIMEOUT: Duration = Duration::from_secs(10);
+const SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(2);
+const PROCESS_EXIT_GRACE: Duration = Duration::from_secs(2);
 
 pub struct AppState {
     pub backend: Arc<Mutex<BackendRuntime>>,
     pub rpc: Arc<RpcClient>,
     pub bridge: Arc<EventBridge>,
     pub health: Arc<BackendHealth>,
+    lifecycle: Mutex<()>,
     shutting_down: AtomicBool,
 }
 
@@ -35,6 +40,7 @@ impl AppState {
             rpc,
             bridge,
             health,
+            lifecycle: Mutex::new(()),
             shutting_down: AtomicBool::new(false),
         }
     }
@@ -44,6 +50,15 @@ impl AppState {
     }
 
     pub async fn start_backend(&self, app: AppHandle) -> Result<(), String> {
+        let _lifecycle = self.lifecycle.lock().await;
+        self.start_backend_inner(app).await
+    }
+
+    async fn start_backend_inner(&self, app: AppHandle) -> Result<(), String> {
+        if self.health.snapshot().running {
+            return Ok(());
+        }
+
         let bridge = Arc::clone(&self.bridge);
         let on_message: Arc<dyn Fn(u64, Value) + Send + Sync> =
             Arc::new(move |generation, message| bridge.handle_message(generation, message));
@@ -58,16 +73,89 @@ impl AppState {
             );
         });
 
-        let result = self
+        let start_result = self
             .backend
             .lock()
             .await
             .start(on_message, on_exit)
             .await
             .map_err(|error| error.to_string());
+        let generation = match start_result {
+            Ok(generation) => generation,
+            Err(reason) => {
+                self.rpc.mark_unready(reason.clone());
+                let _ = app.emit(
+                    &backend_event_name("backend.exited"),
+                    serde_json::json!({ "reason": reason, "recoverable": true }),
+                );
+                return Err(reason);
+            }
+        };
+
+        let result = async {
+            let initialized = self
+                .rpc
+                .request_before_ready(
+                    "initialize",
+                    Some(serde_json::json!({
+                        "protocol_version": SESSION_PROTOCOL_VERSION,
+                        "client": {
+                            "name": "tauri-python-app",
+                            "version": env!("CARGO_PKG_VERSION"),
+                        },
+                        "capabilities": {},
+                    })),
+                    INITIALIZE_TIMEOUT,
+                )
+                .await
+                .map_err(|error| error.to_string())?;
+
+            let protocol_version = initialized
+                .get("protocol_version")
+                .and_then(Value::as_str)
+                .ok_or_else(|| "initialize 响应缺少 protocol_version".to_string())?;
+            if protocol_version != SESSION_PROTOCOL_VERSION {
+                return Err(format!(
+                    "Backend 协议版本不兼容: host={}, backend={protocol_version}",
+                    SESSION_PROTOCOL_VERSION
+                ));
+            }
+
+            self.rpc
+                .notify_before_ready("initialized", None, INITIALIZE_TIMEOUT)
+                .await
+                .map_err(|error| error.to_string())?;
+
+            let ready_payload = serde_json::json!({
+                "protocol_version": protocol_version,
+                "version": initialized
+                    .pointer("/server/version")
+                    .and_then(Value::as_str)
+                    .unwrap_or("unknown"),
+                "capabilities": initialized
+                    .pointer("/capabilities/methods")
+                    .cloned()
+                    .unwrap_or_else(|| Value::Array(Vec::new())),
+            });
+            if !self.health.mark_ready(generation, &ready_payload) {
+                return Err("Backend generation 在握手期间已失效".to_string());
+            }
+            app.emit(&backend_event_name("backend.ready"), ready_payload)
+                .map_err(|error| format!("派发 backend.ready 失败: {error}"))?;
+            Ok(())
+        }
+        .await;
 
         if let Err(reason) = &result {
             self.rpc.mark_unready(reason.clone());
+            self.health.begin_stop();
+            let _ = self
+                .backend
+                .lock()
+                .await
+                .stop(generation, Duration::ZERO)
+                .await;
+            self.health.fail_current(generation, reason.clone());
             let _ = app.emit(
                 &backend_event_name("backend.exited"),
                 serde_json::json!({ "reason": reason, "recoverable": true }),
@@ -77,13 +165,60 @@ impl AppState {
     }
 
     pub async fn stop_backend(&self, reason: &str) -> Result<(), String> {
+        let _lifecycle = self.lifecycle.lock().await;
+        self.stop_backend_inner(reason).await
+    }
+
+    async fn stop_backend_inner(&self, reason: &str) -> Result<(), String> {
+        if !self.health.snapshot().running {
+            self.rpc.mark_unready(reason.to_string());
+            return Ok(());
+        }
+
+        let generation = self.health.begin_stop();
+        let shutdown_result = self
+            .rpc
+            .request_before_ready("backend.shutdown", None, SHUTDOWN_TIMEOUT)
+            .await;
+        if let Err(error) = &shutdown_result {
+            log::warn!("Backend graceful shutdown request failed: {error}");
+        } else if let Err(error) = self
+            .rpc
+            .notify_before_ready("backend.exit", None, SHUTDOWN_TIMEOUT)
+            .await
+        {
+            log::warn!("Backend exit notification failed: {error}");
+        }
+
         self.rpc.mark_unready(reason.to_string());
         self.backend
             .lock()
             .await
-            .stop()
+            .stop(generation, PROCESS_EXIT_GRACE)
             .await
             .map_err(|error| error.to_string())
+    }
+
+    pub async fn stop_backend_manually(&self, app: AppHandle) -> Result<(), String> {
+        let _lifecycle = self.lifecycle.lock().await;
+        self.stop_backend_inner("Backend process was stopped manually")
+            .await?;
+        let _ = app.emit(
+            &backend_event_name("backend.exited"),
+            serde_json::json!({ "reason": "manual stop", "recoverable": false }),
+        );
+        Ok(())
+    }
+
+    pub async fn restart_backend(&self, app: AppHandle) -> Result<(), String> {
+        let _lifecycle = self.lifecycle.lock().await;
+        self.stop_backend_inner("Backend process is restarting")
+            .await?;
+        let _ = app.emit(
+            &backend_event_name("backend.exited"),
+            serde_json::json!({ "reason": "restarting", "recoverable": false }),
+        );
+        self.start_backend_inner(app).await
     }
 }
 
@@ -116,14 +251,7 @@ pub async fn backend_start(state: State<'_, Arc<AppState>>, app: AppHandle) -> R
 
 #[command]
 pub async fn backend_stop(state: State<'_, Arc<AppState>>, app: AppHandle) -> Result<(), String> {
-    state
-        .stop_backend("Backend process was stopped manually")
-        .await?;
-    let _ = app.emit(
-        &backend_event_name("backend.exited"),
-        serde_json::json!({ "reason": "manual stop", "recoverable": false }),
-    );
-    Ok(())
+    state.stop_backend_manually(app).await
 }
 
 #[command]
@@ -131,12 +259,7 @@ pub async fn backend_restart(
     state: State<'_, Arc<AppState>>,
     app: AppHandle,
 ) -> Result<(), String> {
-    state.stop_backend("Backend process is restarting").await?;
-    let _ = app.emit(
-        &backend_event_name("backend.exited"),
-        serde_json::json!({ "reason": "restarting", "recoverable": false }),
-    );
-    state.start_backend(app).await
+    state.restart_backend(app).await
 }
 
 #[command]

@@ -1,27 +1,24 @@
-"""
-Python Backend 主入口程序。
-- 初始化 asyncio 事件循环
-- 启动标准输入按行读取任务 -> 路由分发消息
-- 启动时向 Rust 侧推送 backend.ready 就绪通知
-"""
+"""Python sidecar entry point and JSON-RPC session lifecycle."""
 from __future__ import annotations
+
 import asyncio
 import logging
 import os
 import sys
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
+
+from pydantic import ValidationError
 
 if __package__ in {None, ""}:
     sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-# Windows/PyInstaller 环境默认编码可能不是 UTF-8；显式固定协议与日志编码。
 if hasattr(sys.stdout, "reconfigure"):
     sys.stdout.reconfigure(encoding="utf-8", line_buffering=True)
 if hasattr(sys.stderr, "reconfigure"):
     sys.stderr.reconfigure(encoding="utf-8", errors="replace", line_buffering=True)
 
-# 配置标准错误输出流专属的格式化日志（保证标准输出 stdout 只承载协议 JSON 报文）
 logging.basicConfig(
     stream=sys.stderr,
     level=logging.DEBUG,
@@ -30,134 +27,207 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-from backend.protocol import stdin_reader, send_response, send_error, send_notification
-from backend.task_manager import TaskRegistry
-from backend.models import BackendReadyPayload
-from backend.dispatcher import dispatcher, RpcInvalidParamsError, RpcMethodNotFoundError
+from backend.dispatcher import RpcInvalidParamsError, RpcMethodNotFoundError, dispatcher
+from backend.models import ImplementationInfo, InitializeParams, InitializeResult
+from backend.protocol import (
+    send_error,
+    send_response,
+    start_writer,
+    stdin_reader,
+    stop_writer,
+)
 from backend.rpc import rpc
+from backend.task_manager import TaskRegistry
 
-# ─── 导入业务处理器以自动触发 @rpc.register 装饰器绑定 ───────────────────
-import backend.handlers.echo
-import backend.handlers.tasks
+import backend.handlers.echo  # noqa: F401, E402
+import backend.handlers.tasks  # noqa: F401, E402
 
-# protocol.py captured the original stdout stream above. Redirect ordinary
-# print() calls (including most third-party Python output) to stderr so they do
-# not corrupt the NDJSON transport.
+# protocol.py retained the original stdout. Everything else logs to stderr.
 sys.stdout = sys.stderr
 
-registry = TaskRegistry()
+PROTOCOL_VERSION = "1.0"
 MAX_INBOUND_QUEUE = 128
 MAX_CONCURRENT_DISPATCH = 16
 
+
+@dataclass
+class Session:
+    phase: str = "created"
+    exit_requested: asyncio.Event = field(default_factory=asyncio.Event)
+
+
+registry = TaskRegistry()
+session = Session()
+
+
 def response_id(msg: dict[str, Any]) -> str | int | None:
-    """Return a JSON-RPC response id, or null when the id is absent/invalid."""
     value = msg.get("id")
+    if isinstance(value, bool):
+        return None
     return value if isinstance(value, (str, int)) else None
 
 
+async def _dispatch_control(
+    method: str,
+    params: Any,
+    msg_has_id: bool,
+    msg_id: str | int | None,
+) -> bool:
+    """Handle lifecycle messages and return whether the message was consumed."""
+    if method == "initialize":
+        if not msg_has_id:
+            return True
+        if session.phase != "created":
+            await send_error(msg_id, -32002, "Backend session is already initialized")
+            return True
+        try:
+            request = InitializeParams.model_validate(params)
+        except ValidationError as error:
+            await send_error(msg_id, -32602, "Invalid initialize params", error.errors())
+            return True
+        if request.protocol_version != PROTOCOL_VERSION:
+            await send_error(
+                msg_id,
+                -32004,
+                "Unsupported protocol version",
+                {"supported": [PROTOCOL_VERSION]},
+            )
+            return True
+
+        session.phase = "waiting_initialized"
+        result = InitializeResult(
+            protocol_version=PROTOCOL_VERSION,
+            server=ImplementationInfo(
+                name="tauri-python-backend",
+                version=os.environ.get("TAURI_APP_VERSION", "0.1.0"),
+            ),
+            capabilities={
+                "methods": rpc.methods,
+                "tasks": {"query": True, "cancel": True, "remove": True},
+            },
+        )
+        await send_response(msg_id, result.model_dump())
+        return True
+
+    if method == "initialized":
+        if not msg_has_id and session.phase == "waiting_initialized":
+            session.phase = "active"
+            logger.info("Backend session initialized")
+        return True
+
+    if method == "backend.shutdown":
+        if not msg_has_id:
+            return True
+        if session.phase != "active":
+            await send_error(msg_id, -32002, "Backend session is not active")
+            return True
+        session.phase = "shutting_down"
+        await registry.shutdown()
+        await send_response(msg_id, None)
+        return True
+
+    if method == "backend.exit":
+        if not msg_has_id and session.phase == "shutting_down":
+            session.exit_requested.set()
+        return True
+
+    return False
+
+
 async def dispatch(msg: Any) -> None:
-    """对流入的 JSON-RPC 消息进行结构验证与分发执行。"""
+    """Validate and dispatch one JSON-RPC 2.0 message."""
     if not isinstance(msg, dict):
-        logger.warning("收到非对象 JSON-RPC 报文: %s", msg)
         await send_error(None, -32600, "Invalid Request")
         return
 
     msg_has_id = "id" in msg
     msg_id = response_id(msg)
-    jsonrpc = msg.get("jsonrpc")
-    if jsonrpc != "2.0":
-        logger.warning("收到不符合规范的非 JSON-RPC 2.0 报文: %s", msg)
+    if msg.get("jsonrpc") != "2.0":
         await send_error(msg_id, -32600, "Invalid Request")
+        return
+    if msg_has_id and msg.get("id") is not None and msg_id is None:
+        await send_error(None, -32600, "Invalid Request")
         return
 
     method = msg.get("method")
     if not isinstance(method, str) or not method:
-        logger.warning("收到缺少有效 method 的 JSON-RPC 报文: %s", msg)
         if msg_has_id:
             await send_error(msg_id, -32600, "Invalid Request")
         return
 
     params = msg.get("params")
+    if "params" in msg and not isinstance(params, (dict, list)):
+        if msg_has_id:
+            await send_error(msg_id, -32602, "params must be an object or array")
+        return
+
+    if await _dispatch_control(method, params, msg_has_id, msg_id):
+        return
+    if session.phase != "active":
+        if msg_has_id:
+            await send_error(msg_id, -32002, "Backend session is not initialized")
+        return
 
     try:
-        # 使用装饰器派发器调用方法，并将 TaskRegistry 依赖动态注入进去
         result = await dispatcher.call(method, params, registry=registry)
         if msg_has_id:
             await send_response(msg_id, result)
-    except RpcMethodNotFoundError as e:
-        logger.warning("执行 RPC 方法 %s 时未找到处理器: %s", method, e)
+    except RpcMethodNotFoundError as error:
         if msg_has_id:
-            await send_error(msg_id, -32601, str(e))
-    except RpcInvalidParamsError as e:
-        logger.warning("执行 RPC 方法 %s 时参数无效: %s", method, e)
+            await send_error(msg_id, -32601, str(error))
+    except RpcInvalidParamsError as error:
         if msg_has_id:
-            await send_error(msg_id, -32602, str(e))
-    except Exception as e:
-        logger.exception("执行 RPC 方法 %s 时发生内部异常: %s", method, e)
+            await send_error(msg_id, -32602, str(error))
+    except Exception:
+        logger.exception("执行 RPC 方法 %s 时发生内部异常", method)
         if msg_has_id:
             await send_error(msg_id, -32603, "Internal error")
 
 
-# ─── 主异步工作循环 ───────────────────────────────────────────────────────────
-
 async def main() -> None:
-    logger.info("Backend 脚本初始化...")
-
-    # 启动后台 stdin 协程异步读取管道行流
+    logger.info("Backend process started; waiting for initialize")
+    await start_writer()
     queue: asyncio.Queue[Any] = asyncio.Queue(maxsize=MAX_INBOUND_QUEUE)
     dispatch_slots = asyncio.Semaphore(MAX_CONCURRENT_DISPATCH)
     active_dispatch_tasks: set[asyncio.Task] = set()
     reader_task = asyncio.create_task(stdin_reader(queue), name="stdin-reader")
 
-    # Only announce readiness after imports, routing and the stdin reader are
-    # fully initialized. Rust does not accept RPC calls before this handshake.
-    await send_notification(
-        "backend.ready",
-        BackendReadyPayload(
-            version=os.environ.get("TAURI_APP_VERSION", "0.1.0"),
-            capabilities=rpc.methods,
-        ).model_dump(),
-    )
-
-    logger.info("Backend 已进入主轮询事件循环")
-
-    async def run_dispatch_with_slot(msg: Any) -> None:
+    async def run_dispatch_with_slot(message: Any) -> None:
         try:
-            await dispatch(msg)
+            await dispatch(message)
         finally:
             dispatch_slots.release()
 
-    def track_dispatch_task(task: asyncio.Task) -> None:
+    def track(task: asyncio.Task) -> None:
         active_dispatch_tasks.add(task)
 
         def cleanup(done: asyncio.Task) -> None:
             active_dispatch_tasks.discard(done)
             try:
-                exc = done.exception()
+                error = done.exception()
             except asyncio.CancelledError:
                 return
-            if exc:
-                logger.exception("RPC 调度任务未捕获异常: %s", exc)
+            if error:
+                logger.error("RPC dispatch task failed: %s", error)
 
         task.add_done_callback(cleanup)
 
     try:
-        while True:
+        while not session.exit_requested.is_set():
             try:
-                # 阻塞式从解析队列提取消息并交付给协程分发处理
-                msg = await asyncio.wait_for(queue.get(), timeout=1.0)
-                await dispatch_slots.acquire()
-                task = asyncio.create_task(run_dispatch_with_slot(msg), name="rpc-dispatch")
-                track_dispatch_task(task)
+                message = await asyncio.wait_for(queue.get(), timeout=0.25)
             except asyncio.TimeoutError:
                 if reader_task.done():
-                    exc = reader_task.exception()
-                    if exc:
-                        logger.error("stdin 读取任务异常退出: %s", exc)
                     break
-                continue  # 定时超时，用于心跳维持及终止状态拦截检查
-            except asyncio.CancelledError:
-                break
+                continue
+
+            method = message.get("method") if isinstance(message, dict) else None
+            if method in {"initialize", "initialized", "backend.shutdown", "backend.exit"}:
+                await dispatch(message)
+                continue
+
+            await dispatch_slots.acquire()
+            track(asyncio.create_task(run_dispatch_with_slot(message), name="rpc-dispatch"))
     finally:
         reader_task.cancel()
         for task in active_dispatch_tasks:
@@ -165,13 +235,13 @@ async def main() -> None:
         if active_dispatch_tasks:
             await asyncio.gather(*active_dispatch_tasks, return_exceptions=True)
         await registry.shutdown()
-        logger.info("Backend 进程安全退出")
+        await stop_writer()
+        logger.info("Backend process exited")
 
 
 if __name__ == "__main__":
     asyncio.run(main())
-    # ThreadPoolExecutor cannot interrupt a running blocking function and Python
-    # waits for worker threads during interpreter shutdown. EOF means the Tauri
-    # parent is gone, so force the dedicated sidecar to terminate now.
     sys.stderr.flush()
+    # Running worker threads cannot be interrupted; the sidecar process must not
+    # outlive its supervising Tauri process after EOF or a graceful exit.
     os._exit(0)

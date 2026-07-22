@@ -31,11 +31,11 @@ from backend.models import (  # noqa: E402
     BackendReadyPayload,
     TaskCancelResult,
     TaskCancelParams,
+    TaskGetParams,
     TaskIdResult,
     TaskProgress,
-    TaskResult,
-    TaskStatus,
-    TaskSummary,
+    TaskRemoveResult,
+    TaskSnapshot,
 )
 
 
@@ -44,12 +44,12 @@ MODELS = {
     "RpcRequest": RpcRequest,
     "RpcResponse": RpcResponse,
     "RpcNotification": RpcNotification,
-    "TaskStatus": TaskStatus,
-    "TaskResult": TaskResult,
     "TaskProgress": TaskProgress,
-    "TaskSummary": TaskSummary,
+    "TaskSnapshot": TaskSnapshot,
     "TaskCancelResult": TaskCancelResult,
     "TaskCancelParams": TaskCancelParams,
+    "TaskGetParams": TaskGetParams,
+    "TaskRemoveResult": TaskRemoveResult,
     "TaskIdResult": TaskIdResult,
     "BackendReadyPayload": BackendReadyPayload,
     "LogPayload": LogPayload,
@@ -59,7 +59,9 @@ IDENT_RE = re.compile(r"^[A-Za-z_$][A-Za-z0-9_$]*$")
 
 RPC_METHODS = {
     "echo": ("unknown", "unknown"),
-    "task.list": ("null", "Array<TaskSummary>"),
+    "task.list": ("null", "Array<TaskSnapshot>"),
+    "task.get": ("TaskGetParams", "TaskSnapshot | null"),
+    "task.remove": ("TaskGetParams", "TaskRemoveResult"),
     "task.cancel": ("TaskCancelParams", "TaskCancelResult"),
     "task.long": ("null", "TaskIdResult"),
     "task.blocking": ("null", "TaskIdResult"),
