@@ -1,5 +1,5 @@
 import { observer } from "mobx-react-lite";
-import { useState, useEffect } from "react";
+import { useCallback, useState, useEffect } from "react";
 import { Menu } from "lucide-react";
 import {
   Menubar,
@@ -18,6 +18,10 @@ const appWindow = getCurrentWindow();
 export const AppMenu = observer(() => {
   const [windowWidth, setWindowWidth] = useState(window.innerWidth);
 
+  const handleExit = useCallback(() => {
+    appWindow.close().catch(() => {});
+  }, []);
+
   useEffect(() => {
     const handleResize = () => {
       setWindowWidth(window.innerWidth);
@@ -26,9 +30,24 @@ export const AppMenu = observer(() => {
     return () => window.removeEventListener("resize", handleResize);
   }, []);
 
-  const handleExit = () => {
-    appWindow.close().catch(() => {});
-  };
+  useEffect(() => {
+    const handleKeyDown = (event: KeyboardEvent) => {
+      if (
+        !event.repeat &&
+        !event.isComposing &&
+        event.ctrlKey &&
+        !event.altKey &&
+        !event.shiftKey &&
+        event.key.toLowerCase() === "q"
+      ) {
+        event.preventDefault();
+        handleExit();
+      }
+    };
+
+    window.addEventListener("keydown", handleKeyDown);
+    return () => window.removeEventListener("keydown", handleKeyDown);
+  }, [handleExit]);
 
   // 优化折叠阈值：只有在空间确实非常紧凑时才启动阶梯式折叠
   const showHelp = windowWidth >= 420; // 窗口小于 420px 时折叠 "帮助"
@@ -51,8 +70,12 @@ export const AppMenu = observer(() => {
             偏好设置
           </MenubarItem>
           <MenubarSeparator />
-          <MenubarItem onClick={handleExit} className="text-destructive focus:bg-destructive/10 focus:text-destructive cursor-pointer">
-            退出
+          <MenubarItem
+            onClick={handleExit}
+            className="text-destructive focus:bg-destructive/10 focus:text-destructive cursor-pointer"
+          >
+            <span>退出</span>
+            <span className="ml-auto pl-8 text-xs text-muted-foreground">Ctrl+Q</span>
           </MenubarItem>
         </MenubarContent>
       </MenubarMenu>
