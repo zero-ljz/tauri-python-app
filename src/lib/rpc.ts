@@ -1,12 +1,7 @@
 import { invoke } from "@tauri-apps/api/core";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import { rpcStore } from "@/stores/rpc.store";
-import type {
-  LogPayload,
-  RpcMethod,
-  RpcParams,
-  RpcResult,
-} from "@/types/generated";
+import type { LogPayload, RpcMethod, RpcParams, RpcResult } from "@/types/generated";
 
 export type RpcEventHandler<T = unknown> = (payload: T) => void;
 
@@ -30,11 +25,14 @@ export interface BackendStatusPayload {
   ready: boolean;
   version: string | null;
   capabilities: string[];
+  method_permissions: Record<
+    string,
+    "public" | "debug-only" | "requires-confirmation" | "dangerous"
+  >;
   last_error: string | null;
 }
 
-const backendEventName = (method: string) =>
-  `backend://${method.split(".").join("/")}`;
+const backendEventName = (method: string) => `backend://${method.split(".").join("/")}`;
 
 class TauriRpcClient {
   private handlers = new Map<string, Set<RpcEventHandler>>();
@@ -43,13 +41,15 @@ class TauriRpcClient {
 
   async call<T = unknown>(method: string, params?: unknown, timeout?: number): Promise<T> {
     const structuredParams = params == null ? undefined : params;
-    const finish = rpcStore.trackRequest(method, structuredParams);
+    const correlationId = crypto.randomUUID();
+    const finish = rpcStore.trackRequest(method, structuredParams, correlationId);
 
     try {
       const result = await invoke<T>("backend_request", {
         method,
         ...(structuredParams === undefined ? {} : { params: structuredParams }),
         timeoutMs: timeout,
+        correlationId,
       });
       finish(result);
       return result;
@@ -62,9 +62,20 @@ class TauriRpcClient {
   async callKnown<M extends RpcMethod>(
     method: M,
     params: RpcParams<M>,
-    timeout?: number
+    timeout?: number,
   ): Promise<RpcResult<M>> {
     return this.call<RpcResult<M>>(method, params, timeout);
+  }
+
+  async callConfirmed<T = unknown>(method: string, params?: unknown, timeout?: number): Promise<T> {
+    const structuredParams = params == null ? undefined : params;
+    const correlationId = crypto.randomUUID();
+    return invoke<T>("backend_request_confirmed", {
+      method,
+      ...(structuredParams === undefined ? {} : { params: structuredParams }),
+      timeoutMs: timeout,
+      correlationId,
+    });
   }
 
   async notify(method: string, params?: unknown, timeout?: number): Promise<void> {
@@ -76,17 +87,11 @@ class TauriRpcClient {
     });
   }
 
-  async listen(
-    event: string,
-    options?: RpcListenOptions
-  ): Promise<void>;
-  async listen(
-    event: string[],
-    options?: RpcListenOptions
-  ): Promise<Record<string, true>>;
+  async listen(event: string, options?: RpcListenOptions): Promise<void>;
+  async listen(event: string[], options?: RpcListenOptions): Promise<Record<string, true>>;
   async listen(
     event: string | string[],
-    options: RpcListenOptions = {}
+    options: RpcListenOptions = {},
   ): Promise<void | Record<string, true>> {
     if (Array.isArray(event)) {
       await Promise.all(event.map((name) => this.listenOne(name, options)));
@@ -173,24 +178,18 @@ class TauriRpcClient {
 
 export const rpc = new TauriRpcClient();
 
-export const rpcCall = <M extends RpcMethod>(
-  method: M,
-  params: RpcParams<M>,
-  timeout?: number
-) => rpc.callKnown(method, params, timeout);
+export const rpcCall = <M extends RpcMethod>(method: M, params: RpcParams<M>, timeout?: number) =>
+  rpc.callKnown(method, params, timeout);
 
 export const rpcNotify = (method: string, params?: unknown) => rpc.notify(method, params);
-export function rpcListen(
-  event: string,
-  options?: RpcListenOptions
-): Promise<void>;
+export function rpcListen(event: string, options?: RpcListenOptions): Promise<void>;
 export function rpcListen(
   event: string[],
-  options?: RpcListenOptions
+  options?: RpcListenOptions,
 ): Promise<Record<string, true>>;
 export function rpcListen(
   event: string | string[],
-  options?: RpcListenOptions
+  options?: RpcListenOptions,
 ): Promise<void | Record<string, true>> {
   return Array.isArray(event) ? rpc.listen(event, options) : rpc.listen(event, options);
 }
@@ -206,3 +205,12 @@ export const backendLogs = () => invoke<LogPayload[]>("backend_logs");
 export const backendStart = () => invoke("backend_start");
 export const backendStop = () => invoke("backend_stop");
 export const backendRestart = () => invoke("backend_restart");
+
+export interface DiagnosticsExportResult {
+  path: string;
+}
+
+export const exportDiagnostics = (frontendState?: unknown) =>
+  invoke<DiagnosticsExportResult>("diagnostics_export", {
+    frontendState,
+  });

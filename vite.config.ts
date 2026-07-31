@@ -2,7 +2,6 @@ import { defineConfig } from "vite";
 import react from "@vitejs/plugin-react";
 import tailwindcss from "@tailwindcss/vite";
 import path from "node:path";
-// @ts-expect-error 如果未安装 @types/node，此处可能会有类型警告，使用 ignore 忽略
 import process from "node:process";
 
 const host = process.env.TAURI_DEV_HOST || "127.0.0.1";
@@ -20,9 +19,7 @@ export default defineConfig(() => ({
     port: 1420,
     strictPort: true,
     host: host || false,
-    hmr: host
-      ? { protocol: "ws", host, port: 1421 }
-      : undefined,
+    hmr: host ? { protocol: "ws", host, port: 1421 } : undefined,
     watch: {
       // 避免 Vite 监听 Rust 源码目录，导致不必要的重启
       ignored: ["**/src-tauri/**"],

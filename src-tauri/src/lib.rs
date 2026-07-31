@@ -1,8 +1,14 @@
 mod backend;
 mod bridge;
 mod commands;
+mod diagnostics;
 mod events;
+#[allow(dead_code)]
+mod protocol_config;
+mod redaction;
 mod rpc;
+mod updater;
+mod window_commands;
 
 use std::sync::Arc;
 use tauri::{Manager, WindowEvent};
@@ -11,15 +17,20 @@ use tokio::sync::Mutex;
 use backend::{BackendHealth, BackendRuntime};
 use bridge::EventBridge;
 use commands::{
-    backend_logs, backend_notify, backend_request, backend_restart, backend_start, backend_status,
-    backend_stop, AppState,
+    backend_logs, backend_notify, backend_request, backend_request_confirmed, backend_restart,
+    backend_start, backend_status, backend_stop, AppState,
 };
+use diagnostics::diagnostics_export;
 use rpc::RpcClient;
+use updater::{updater_check, updater_install, updater_status};
+use window_commands::show_window_system_menu;
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_log::Builder::new().build())
+        .plugin(tauri_plugin_dialog::init())
+        .plugin(tauri_plugin_updater::Builder::new().build())
         .plugin(tauri_plugin_shell::init())
         .on_window_event(|window, event| {
             if let WindowEvent::CloseRequested { api, .. } = event {
@@ -105,7 +116,13 @@ pub fn run() {
             backend_stop,
             backend_restart,
             backend_request,
+            backend_request_confirmed,
             backend_notify,
+            updater_status,
+            updater_check,
+            updater_install,
+            diagnostics_export,
+            show_window_system_menu,
         ])
         .run(tauri::generate_context!())
         .expect("failed to run Tauri app");

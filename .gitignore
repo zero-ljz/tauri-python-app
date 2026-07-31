@@ -1,48 +1,53 @@
-# 日志记录
-logs
+# Logs and local configuration
+logs/
 *.log
 npm-debug.log*
 yarn-debug.log*
 yarn-error.log*
 pnpm-debug.log*
 lerna-debug.log*
-
-# 依赖与编译产物
-node_modules
-dist
-dist-ssr
+.env
+.env.*
+!.env.example
 *.local
-.vite
 
-# 编译器与编辑器缓存
+# JavaScript build and dependency artifacts
+node_modules/
+dist/
+dist-ssr/
+.vite/
+coverage/
+
+# Editors and operating-system metadata
 .vscode/*
 !.vscode/extensions.json
-.idea
+.idea/
 .DS_Store
+Thumbs.db
 *.suo
 *.ntvs*
 *.njsproj
 *.sln
 *.sw?
 
-# Python backend and packaging cache.
+# Python caches and virtual environments
 __pycache__/
 *.pyc
 *.pyo
 *.pyd
 .pytest_cache/
-.venv
-venv
+.ruff_cache/
+.mypy_cache/
+.venv/
+venv/
 ENV/
 env/
 
-# PyInstaller 构建产物（build/ 为临时目录，bin/ 为打包后的二进制）
+# Rust and PyInstaller build artifacts
+src-tauri/target/
 build/
 src-tauri/bin/
-
-# PyInstaller spec 文件（由 build_backend.py 在 build/pyinstaller/spec/ 内生成，
-# 根目录若有残留 spec 也一并排除）
 *.spec
 
-# 自动生成的类型文件（由 gen_types.py 生成，不应手工编辑）
+# Generated intermediate schema; committed generated TypeScript remains tracked
 src/types/schema.json

@@ -7,6 +7,8 @@ use std::time::Duration;
 use tokio::sync::{oneshot, watch};
 use uuid::Uuid;
 
+use crate::protocol_config::MAX_FRAME_BYTES;
+
 use crate::backend::{StdinMessage, StdinTx};
 
 pub type RequestId = String;
@@ -108,7 +110,12 @@ impl RpcClient {
             .map_err(|_| RpcFailure::unavailable("Backend 就绪通知通道已关闭"))
     }
 
-    fn encode_message(method: &str, id: Option<&str>, params: Option<Value>) -> RpcResult<Vec<u8>> {
+    fn encode_message(
+        method: &str,
+        id: Option<&str>,
+        params: Option<Value>,
+        correlation_id: Option<&str>,
+    ) -> RpcResult<Vec<u8>> {
         if params
             .as_ref()
             .is_some_and(|value| !value.is_object() && !value.is_array())
@@ -128,9 +135,21 @@ impl RpcClient {
         if let Some(params) = params {
             message.insert("params".to_string(), params);
         }
+        if let Some(correlation_id) = correlation_id {
+            message.insert(
+                "meta".to_string(),
+                serde_json::json!({"correlation_id": correlation_id}),
+            );
+        }
 
         let mut line = serde_json::to_vec(&Value::Object(message))
             .map_err(|error| RpcFailure::internal(format!("RPC 消息序列化失败: {error}")))?;
+        if line.len() > MAX_FRAME_BYTES {
+            return Err(RpcFailure::new(
+                -32005,
+                format!("RPC 请求超过传输上限（{} bytes）", MAX_FRAME_BYTES),
+            ));
+        }
         line.push(b'\n');
         Ok(line)
     }
@@ -166,6 +185,7 @@ impl RpcClient {
         params: Option<Value>,
         deadline: Duration,
         require_ready: bool,
+        correlation_id: Option<String>,
     ) -> RpcResult<Value> {
         let id = Uuid::new_v4().to_string();
         let request_id = id.clone();
@@ -174,7 +194,7 @@ impl RpcClient {
                 self.wait_until_ready().await?;
             }
 
-            let line = Self::encode_message(method, Some(&id), params)?;
+            let line = Self::encode_message(method, Some(&id), params, correlation_id.as_deref())?;
             let (tx, rx) = oneshot::channel();
             self.pending
                 .insert(request_id.clone(), PendingRequest { tx });
@@ -191,13 +211,15 @@ impl RpcClient {
         result
     }
 
-    pub async fn request(
+    pub async fn request_with_correlation(
         &self,
         method: &str,
         params: Option<Value>,
         deadline: Duration,
+        correlation_id: Option<String>,
     ) -> RpcResult<Value> {
-        self.request_inner(method, params, deadline, true).await
+        self.request_inner(method, params, deadline, true, correlation_id)
+            .await
     }
 
     pub async fn request_before_ready(
@@ -206,7 +228,8 @@ impl RpcClient {
         params: Option<Value>,
         deadline: Duration,
     ) -> RpcResult<Value> {
-        self.request_inner(method, params, deadline, false).await
+        self.request_inner(method, params, deadline, false, None)
+            .await
     }
 
     async fn notify_inner(
@@ -220,7 +243,7 @@ impl RpcClient {
             if require_ready {
                 self.wait_until_ready().await?;
             }
-            self.write_line(Self::encode_message(method, None, params)?)
+            self.write_line(Self::encode_message(method, None, params, None)?)
                 .await
         };
 
@@ -265,7 +288,7 @@ mod tests {
         let (_ready_tx, ready_rx) = watch::channel(false);
         let client = RpcClient::new(stdin, ready_rx);
         let error = client
-            .request("echo", None, Duration::from_millis(10))
+            .request_with_correlation("echo", None, Duration::from_millis(10), None)
             .await
             .expect_err("request should time out while backend is not ready");
         assert_eq!(error.code, -32002);
@@ -295,15 +318,35 @@ mod tests {
 
     #[test]
     fn params_are_omitted_when_absent() {
-        let encoded = RpcClient::encode_message("task.list", Some("1"), None).unwrap();
+        let encoded = RpcClient::encode_message("task.list", Some("1"), None, None).unwrap();
         let message: Value = serde_json::from_slice(&encoded).unwrap();
         assert!(message.get("params").is_none());
     }
 
     #[test]
     fn scalar_params_are_rejected() {
-        let error = RpcClient::encode_message("echo", Some("1"), Some(Value::Null))
+        let error = RpcClient::encode_message("echo", Some("1"), Some(Value::Null), None)
             .expect_err("null params are not valid JSON-RPC structured params");
         assert_eq!(error.code, -32602);
+    }
+
+    #[test]
+    fn oversized_requests_are_rejected_before_transport() {
+        let error = RpcClient::encode_message(
+            "echo",
+            Some("1"),
+            Some(serde_json::json!({"payload": "x".repeat(MAX_FRAME_BYTES)})),
+            None,
+        )
+        .expect_err("oversized requests must be rejected");
+        assert_eq!(error.code, -32005);
+    }
+
+    #[test]
+    fn correlation_id_is_forwarded_as_transport_metadata() {
+        let encoded = RpcClient::encode_message("echo", Some("1"), None, Some("frontend-1"))
+            .expect("correlated message should encode");
+        let message: Value = serde_json::from_slice(&encoded).unwrap();
+        assert_eq!(message["meta"]["correlation_id"], "frontend-1");
     }
 }

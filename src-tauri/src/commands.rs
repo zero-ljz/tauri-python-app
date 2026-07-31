@@ -5,16 +5,17 @@ use std::sync::{
 };
 use std::time::Duration;
 use tauri::{command, AppHandle, Emitter, State};
+use tauri_plugin_dialog::{DialogExt, MessageDialogButtons, MessageDialogKind};
 use tokio::sync::Mutex;
 
 use crate::backend::{BackendHealth, BackendLogPayload, BackendRuntime, BackendStatusPayload};
 use crate::bridge::EventBridge;
 use crate::events::backend_event_name;
+use crate::protocol_config::PROTOCOL_VERSION;
 use crate::rpc::{RpcClient, RpcFailure};
 
 const DEFAULT_RPC_TIMEOUT_MS: u64 = 30_000;
 const MAX_RPC_TIMEOUT_MS: u64 = 300_000;
-const SESSION_PROTOCOL_VERSION: &str = "1.0";
 const INITIALIZE_TIMEOUT: Duration = Duration::from_secs(10);
 const SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(2);
 const PROCESS_EXIT_GRACE: Duration = Duration::from_secs(2);
@@ -98,9 +99,9 @@ impl AppState {
                 .request_before_ready(
                     "initialize",
                     Some(serde_json::json!({
-                        "protocol_version": SESSION_PROTOCOL_VERSION,
+                        "protocol_version": PROTOCOL_VERSION,
                         "client": {
-                            "name": "tauri-python-app",
+                            "name": env!("CARGO_PKG_NAME"),
                             "version": env!("CARGO_PKG_VERSION"),
                         },
                         "capabilities": {},
@@ -114,10 +115,10 @@ impl AppState {
                 .get("protocol_version")
                 .and_then(Value::as_str)
                 .ok_or_else(|| "initialize 响应缺少 protocol_version".to_string())?;
-            if protocol_version != SESSION_PROTOCOL_VERSION {
+            if protocol_version != PROTOCOL_VERSION {
                 return Err(format!(
                     "Backend 协议版本不兼容: host={}, backend={protocol_version}",
-                    SESSION_PROTOCOL_VERSION
+                    PROTOCOL_VERSION
                 ));
             }
 
@@ -136,6 +137,21 @@ impl AppState {
                     .pointer("/capabilities/methods")
                     .cloned()
                     .unwrap_or_else(|| Value::Array(Vec::new())),
+                "method_permissions": initialized
+                    .pointer("/capabilities/method_specs")
+                    .and_then(Value::as_array)
+                    .map(|specs| {
+                        specs
+                            .iter()
+                            .filter_map(|spec| {
+                                Some((
+                                    spec.get("name")?.as_str()?.to_string(),
+                                    Value::String(spec.get("permission")?.as_str()?.to_string()),
+                                ))
+                            })
+                            .collect::<serde_json::Map<String, Value>>()
+                    })
+                    .unwrap_or_default(),
             });
             if !self.health.mark_ready(generation, &ready_payload) {
                 return Err("Backend generation 在握手期间已失效".to_string());
@@ -230,6 +246,65 @@ fn rpc_deadline(timeout_ms: Option<u64>) -> Duration {
     )
 }
 
+fn authorize_method(state: &AppState, method: &str, confirmed: bool) -> Result<(), RpcFailure> {
+    let permission = state.health.method_permission(method);
+    authorize_permission(permission.as_deref(), method, confirmed)
+}
+
+fn authorize_permission(
+    permission: Option<&str>,
+    method: &str,
+    confirmed: bool,
+) -> Result<(), RpcFailure> {
+    match permission {
+        None => Err(RpcFailure::new(
+            -32601,
+            format!("RPC method {method:?} is not advertised"),
+        )),
+        Some("public") => Ok(()),
+        Some("debug-only") if cfg!(debug_assertions) => Ok(()),
+        Some("debug-only") => Err(RpcFailure::new(
+            -32010,
+            format!("RPC method {method:?} is disabled in release builds"),
+        )),
+        Some("requires-confirmation") if confirmed => Ok(()),
+        Some("requires-confirmation") => Err(RpcFailure::new(
+            -32010,
+            format!("RPC method {method:?} requires native user confirmation"),
+        )),
+        Some("dangerous") => Err(RpcFailure::new(
+            -32010,
+            format!(
+                "RPC method {method:?} requires a dedicated Rust command and cannot use the generic bridge"
+            ),
+        )),
+        Some(other) => Err(RpcFailure::new(
+            -32010,
+            format!("RPC method {method:?} has unsupported permission {other:?}"),
+        )),
+    }
+}
+
+async fn request_confirmation(app: &AppHandle, method: &str) -> Result<bool, RpcFailure> {
+    let (sender, receiver) = tokio::sync::oneshot::channel();
+    app.dialog()
+        .message(format!(
+            "The application is requesting permission to run the sensitive operation:\n\n{method}"
+        ))
+        .title("Confirm sensitive operation")
+        .kind(MessageDialogKind::Warning)
+        .buttons(MessageDialogButtons::OkCancelCustom(
+            "Allow".to_string(),
+            "Cancel".to_string(),
+        ))
+        .show(move |approved| {
+            let _ = sender.send(approved);
+        });
+    receiver
+        .await
+        .map_err(|_| RpcFailure::new(-32010, "Native confirmation dialog closed unexpectedly"))
+}
+
 #[command]
 pub async fn backend_status(
     state: State<'_, Arc<AppState>>,
@@ -267,11 +342,34 @@ pub async fn backend_request(
     method: String,
     params: Option<Value>,
     timeout_ms: Option<u64>,
+    correlation_id: Option<String>,
     state: State<'_, Arc<AppState>>,
 ) -> Result<Value, RpcFailure> {
+    authorize_method(&state, &method, false)?;
     state
         .rpc
-        .request(&method, params, rpc_deadline(timeout_ms))
+        .request_with_correlation(&method, params, rpc_deadline(timeout_ms), correlation_id)
+        .await
+}
+
+#[command]
+pub async fn backend_request_confirmed(
+    method: String,
+    params: Option<Value>,
+    timeout_ms: Option<u64>,
+    correlation_id: Option<String>,
+    state: State<'_, Arc<AppState>>,
+    app: AppHandle,
+) -> Result<Value, RpcFailure> {
+    authorize_method(&state, &method, true)?;
+    if state.health.method_permission(&method).as_deref() == Some("requires-confirmation")
+        && !request_confirmation(&app, &method).await?
+    {
+        return Err(RpcFailure::new(-32011, "Operation cancelled by user"));
+    }
+    state
+        .rpc
+        .request_with_correlation(&method, params, rpc_deadline(timeout_ms), correlation_id)
         .await
 }
 
@@ -282,8 +380,23 @@ pub async fn backend_notify(
     timeout_ms: Option<u64>,
     state: State<'_, Arc<AppState>>,
 ) -> Result<(), RpcFailure> {
+    authorize_method(&state, &method, false)?;
     state
         .rpc
         .notify(&method, params, rpc_deadline(timeout_ms))
         .await
+}
+
+#[cfg(test)]
+mod authorization_tests {
+    use super::*;
+
+    #[test]
+    fn generic_bridge_permission_matrix_is_explicit() {
+        assert!(authorize_permission(Some("public"), "echo", false).is_ok());
+        assert!(authorize_permission(Some("requires-confirmation"), "write", false).is_err());
+        assert!(authorize_permission(Some("requires-confirmation"), "write", true).is_ok());
+        assert!(authorize_permission(Some("dangerous"), "erase", true).is_err());
+        assert!(authorize_permission(None, "missing", false).is_err());
+    }
 }

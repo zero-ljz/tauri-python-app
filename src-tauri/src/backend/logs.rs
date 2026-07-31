@@ -9,8 +9,8 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use tauri::{AppHandle, Emitter};
 
 use crate::events::backend_event_name;
-
-const MAX_BACKEND_LOGS: usize = 500;
+use crate::protocol_config::MAX_FRONTEND_LOGS;
+use crate::redaction::redact_text;
 
 #[derive(Clone, Serialize)]
 pub struct BackendLogPayload {
@@ -25,7 +25,7 @@ pub struct BackendLogPayload {
 pub(super) type BackendLogBuffer = Arc<Mutex<VecDeque<BackendLogPayload>>>;
 
 pub(super) fn new_log_buffer() -> BackendLogBuffer {
-    Arc::new(Mutex::new(VecDeque::with_capacity(MAX_BACKEND_LOGS)))
+    Arc::new(Mutex::new(VecDeque::with_capacity(MAX_FRONTEND_LOGS)))
 }
 
 fn now_ms() -> u64 {
@@ -67,12 +67,12 @@ pub(super) fn emit_backend_log(
         level,
         stream,
         source,
-        message,
+        message: redact_text(&message),
     };
 
     if let Ok(mut buffer) = logs.lock() {
         buffer.push_back(payload.clone());
-        while buffer.len() > MAX_BACKEND_LOGS {
+        while buffer.len() > MAX_FRONTEND_LOGS {
             buffer.pop_front();
         }
     } else {

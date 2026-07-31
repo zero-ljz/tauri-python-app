@@ -1,91 +1,165 @@
-import inspect
+from __future__ import annotations
+
 import asyncio
+import inspect
 import logging
-from typing import Callable, Any, Dict
+import os
+from collections.abc import Callable
+from dataclasses import dataclass, field
+from typing import Any, Literal
+
+from pydantic import TypeAdapter, ValidationError
 
 logger = logging.getLogger(__name__)
 
+RpcPermission = Literal["public", "debug-only", "requires-confirmation", "dangerous"]
+NO_PARAMS = object()
+
+
 class RpcMethodNotFoundError(ValueError):
-    """JSON-RPC 方法未注册错误。"""
-    pass
+    """The requested RPC method is not registered."""
 
 
 class RpcInvalidParamsError(ValueError):
     """RPC parameters failed method-level validation."""
 
-    pass
+
+class RpcPermissionDeniedError(PermissionError):
+    """The current runtime is not allowed to call an RPC method."""
+
+
+class RpcInvalidResultError(RuntimeError):
+    """An RPC handler returned data that violates its declared contract."""
+
+
+def _debug_enabled() -> bool:
+    return os.environ.get("TAURI_APP_DEBUG", "").lower() in {"1", "true", "yes"}
+
+
+@dataclass(frozen=True)
+class RpcMethodSpec:
+    name: str
+    handler: Callable[..., Any]
+    params_type: Any = NO_PARAMS
+    result_type: Any = Any
+    permission: RpcPermission = "public"
+    description: str = ""
+    params_adapter: TypeAdapter[Any] | None = field(default=None, repr=False)
+    result_adapter: TypeAdapter[Any] | None = field(default=None, repr=False)
+
+    def capability(self) -> dict[str, str]:
+        return {
+            "name": self.name,
+            "permission": self.permission,
+            "description": self.description,
+        }
 
 
 class RpcDispatcher:
-    """
-    基于装饰器模式的 RPC 方法注册与动态分派处理器。
-    """
-    def __init__(self) -> None:
-        # 路由表字典，映射 "方法名" -> "可执行处理函数"
-        self.handlers: Dict[str, Callable[..., Any]] = {}
+    """Typed RPC registry and dispatcher."""
 
-    def register(self, name: str):
-        """
-        用于在业务处理函数上声明注册的装饰器方法。
-        使用示例：
-            @dispatcher.register("my.method")
-            def my_method(params):
-                ...
-        """
-        def decorator(func: Callable[..., Any]):
+    def __init__(self) -> None:
+        self.handlers: dict[str, RpcMethodSpec] = {}
+
+    def register(
+        self,
+        name: str,
+        *,
+        params: Any = NO_PARAMS,
+        result: Any = Any,
+        permission: RpcPermission = "public",
+        description: str | None = None,
+    ) -> Callable[[Callable[..., Any]], Callable[..., Any]]:
+        if permission not in {
+            "public",
+            "debug-only",
+            "requires-confirmation",
+            "dangerous",
+        }:
+            raise ValueError(f"unsupported RPC permission: {permission}")
+
+        def decorator(func: Callable[..., Any]) -> Callable[..., Any]:
             if name in self.handlers:
-                raise RuntimeError(f"RPC 方法 {name!r} 被重复注册")
-            self.handlers[name] = func
-            logger.debug("已注册 RPC 接口方法: %r 映射至 -> %s()", name, func.__name__)
+                raise RuntimeError(f"RPC method {name!r} is already registered")
+            spec = RpcMethodSpec(
+                name=name,
+                handler=func,
+                params_type=params,
+                result_type=result,
+                permission=permission,
+                description=description or inspect.getdoc(func) or "",
+                params_adapter=None if params is NO_PARAMS else TypeAdapter(params),
+                result_adapter=TypeAdapter(result),
+            )
+            self.handlers[name] = spec
+            logger.debug("registered RPC method %s (%s)", name, permission)
             return func
+
         return decorator
 
-    async def call(self, method: str, params: Any, **dependencies) -> Any:
-        """
-        根据注册的方法名，动态匹配依赖并反射调用底层函数，兼容同步与异步协程。
+    def capabilities(self) -> list[dict[str, str]]:
+        return [spec.capability() for spec in self.handlers.values()]
 
-        Fix 5：对同步 handler 进行安全性检查。
-        - 异步 handler（async def）：可安全接收任意依赖（包括 TaskRegistry）。
-        - 同步 handler（def）：通过 asyncio.to_thread 在线程池执行，
-          若接收非线程安全的依赖（如 TaskRegistry），会产生并发安全问题。
-          此时记录警告并在当前事件循环直接调用（不 to_thread），
-          同时建议将 handler 改为 async def。
-        """
-        if method not in self.handlers:
-            raise RpcMethodNotFoundError(f"RPC 方法 {method!r} 未在 Backend 路由表中注册")
+    @staticmethod
+    def _check_permission(spec: RpcMethodSpec) -> None:
+        if spec.permission == "debug-only" and not _debug_enabled():
+            raise RpcPermissionDeniedError(
+                f"RPC method {spec.name!r} is only available in debug builds"
+            )
 
-        handler = self.handlers[method]
-        sig = inspect.signature(handler)
+    @staticmethod
+    def _validate_params(spec: RpcMethodSpec, params: Any) -> Any:
+        if spec.params_type is NO_PARAMS:
+            if params is not None:
+                raise RpcInvalidParamsError(f"RPC method {spec.name!r} does not accept params")
+            return None
+        try:
+            assert spec.params_adapter is not None
+            return spec.params_adapter.validate_python(params)
+        except ValidationError as error:
+            raise RpcInvalidParamsError(str(error)) from error
 
-        # 通过方法签名匹配检查，动态组装调用入参（依赖注入）
-        bound_args = {}
-        if "params" in sig.parameters:
-            bound_args["params"] = params
+    @staticmethod
+    def _validate_result(spec: RpcMethodSpec, result: Any) -> Any:
+        try:
+            assert spec.result_adapter is not None
+            validated = spec.result_adapter.validate_python(result)
+            return spec.result_adapter.dump_python(validated, mode="json")
+        except ValidationError as error:
+            raise RpcInvalidResultError(
+                f"RPC method {spec.name!r} returned an invalid result: {error}"
+            ) from error
 
-        for dep_name, value in dependencies.items():
-            if dep_name in sig.parameters:
-                bound_args[dep_name] = value
+    async def call(self, method: str, params: Any, **dependencies: Any) -> Any:
+        spec = self.handlers.get(method)
+        if spec is None:
+            raise RpcMethodNotFoundError(f"RPC method {method!r} is not registered")
 
-        # 判断并兼容同步普通函数与 asyncio 异步协程函数
-        if inspect.iscoroutinefunction(handler):
-            return await handler(**bound_args)
+        self._check_permission(spec)
+        validated_params = self._validate_params(spec, params)
+        signature = inspect.signature(spec.handler)
+        bound_args: dict[str, Any] = {}
+        if "params" in signature.parameters:
+            bound_args["params"] = validated_params
+        for dependency_name, value in dependencies.items():
+            if dependency_name in signature.parameters:
+                bound_args[dependency_name] = value
+
+        if inspect.iscoroutinefunction(spec.handler):
+            result = await spec.handler(**bound_args)
         else:
-            # Fix 5：检测同步 handler 是否注入了非 params 的依赖（通常非线程安全）
-            non_params_deps = [k for k in bound_args if k != "params"]
-            if non_params_deps:
+            non_params_dependencies = [key for key in bound_args if key != "params"]
+            if non_params_dependencies:
                 logger.warning(
-                    "同步 handler %r 接收了依赖参数 %s，这些依赖可能非线程安全。"
-                    "将在事件循环主线程直接调用（跳过 to_thread）以避免并发问题。"
-                    "建议将此 handler 改写为 async def 以安全使用依赖注入。",
-                    handler.__name__,
-                    non_params_deps,
+                    "sync RPC handler %s uses event-loop dependencies %s; running inline",
+                    spec.handler.__name__,
+                    non_params_dependencies,
                 )
-                # 在当前事件循环直接执行，避免将非线程安全对象暴露给线程池
-                return handler(**bound_args)
+                result = spec.handler(**bound_args)
+            else:
+                result = await asyncio.to_thread(spec.handler, **bound_args)
 
-            # 无非线程安全依赖的同步 handler，正常投入线程池执行
-            return await asyncio.to_thread(handler, **bound_args)
+        return self._validate_result(spec, result)
 
 
-# 全局共享的 RPC 调度派发器单例
 dispatcher = RpcDispatcher()

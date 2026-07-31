@@ -45,6 +45,7 @@ const EntryRow = observer(({ entry }: { entry: RpcEntry }) => {
   return (
     <div className="border-b border-[hsl(var(--border))] last:border-0">
       <button
+        type="button"
         className="flex w-full items-center gap-2 px-3 py-2 text-left hover:bg-[hsl(var(--accent))] transition-colors"
         onClick={() => setExpanded(!expanded)}
       >
@@ -56,9 +57,13 @@ const EntryRow = observer(({ entry }: { entry: RpcEntry }) => {
         <span className={cn("text-xs font-mono font-bold w-8 shrink-0", color)}>{label}</span>
         <span className="flex-1 text-xs font-mono truncate">{entry.method ?? "(未知方法)"}</span>
         {entry.duration != null && (
-          <span className="text-xs text-[hsl(var(--muted-foreground))] font-mono">{entry.duration}ms</span>
+          <span className="text-xs text-[hsl(var(--muted-foreground))] font-mono">
+            {entry.duration}ms
+          </span>
         )}
-        <span className="text-xs text-[hsl(var(--muted-foreground))] font-mono shrink-0">{time}</span>
+        <span className="text-xs text-[hsl(var(--muted-foreground))] font-mono shrink-0">
+          {time}
+        </span>
       </button>
       {expanded && payload !== undefined && (
         <div className="px-3 pb-2">
@@ -93,7 +98,9 @@ const BackendLogRow = ({ entry }: { entry: BackendLogEntry }) => {
     <div className="border-b border-[hsl(var(--border))] px-3 py-2 last:border-0">
       <div className="flex items-start gap-2 text-xs">
         <span className="w-16 shrink-0 font-mono text-[hsl(var(--muted-foreground))]">{time}</span>
-        <span className={cn("w-14 shrink-0 font-mono font-bold uppercase", logLevelColors[entry.level])}>
+        <span
+          className={cn("w-14 shrink-0 font-mono font-bold uppercase", logLevelColors[entry.level])}
+        >
           {entry.level}
         </span>
         <span className="w-20 shrink-0 truncate font-mono text-[hsl(var(--muted-foreground))]">
@@ -159,7 +166,9 @@ const SendPanel = observer(() => {
   return (
     <div className="flex flex-col gap-3 p-3">
       <div className="space-y-1">
-        <Label htmlFor="rpc-method" className="text-xs">调用方法名</Label>
+        <Label htmlFor="rpc-method" className="text-xs">
+          调用方法名
+        </Label>
         <Input
           id="rpc-method"
           value={method}
@@ -169,7 +178,9 @@ const SendPanel = observer(() => {
         />
       </div>
       <div className="space-y-1">
-        <Label htmlFor="rpc-params" className="text-xs">请求参数负载 (JSON 格式)</Label>
+        <Label htmlFor="rpc-params" className="text-xs">
+          请求参数负载 (JSON 格式)
+        </Label>
         <textarea
           id="rpc-params"
           value={params}
@@ -178,9 +189,7 @@ const SendPanel = observer(() => {
           className="selectable flex w-full resize-none rounded-md border border-input bg-background px-3 py-2 font-mono text-xs text-foreground shadow-sm focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
         />
       </div>
-      {lastError && (
-        <p className="text-xs text-red-500">{lastError}</p>
-      )}
+      {lastError && <p className="text-xs text-red-500">{lastError}</p>}
       <Button
         id="rpc-send"
         onClick={handleSend}
@@ -220,9 +229,15 @@ export const RpcDebugPanel = observer(() => {
       <Tabs defaultValue="messages" className="flex flex-col flex-1 min-h-0">
         <div className="px-2 pt-1">
           <TabsList className="grid h-7 w-full grid-cols-3 rounded-md p-0.5">
-            <TabsTrigger value="messages" className="h-6 rounded px-2 py-0 text-xs leading-none">报文</TabsTrigger>
-            <TabsTrigger value="logs" className="h-6 rounded px-2 py-0 text-xs leading-none">日志</TabsTrigger>
-            <TabsTrigger value="send" className="h-6 rounded px-2 py-0 text-xs leading-none">请求</TabsTrigger>
+            <TabsTrigger value="messages" className="h-6 rounded px-2 py-0 text-xs leading-none">
+              报文
+            </TabsTrigger>
+            <TabsTrigger value="logs" className="h-6 rounded px-2 py-0 text-xs leading-none">
+              日志
+            </TabsTrigger>
+            <TabsTrigger value="send" className="h-6 rounded px-2 py-0 text-xs leading-none">
+              请求
+            </TabsTrigger>
           </TabsList>
         </div>
         <TabsContent value="messages" className="flex-1 min-h-0 mt-0">

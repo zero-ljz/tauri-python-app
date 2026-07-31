@@ -1,4 +1,5 @@
 import { makeAutoObservable } from "mobx";
+import { DEBUG_TOOLS_ENABLED } from "@/config";
 
 export type Theme = "light" | "dark" | "system";
 
@@ -6,7 +7,8 @@ export type Theme = "light" | "dark" | "system";
 class AppStore {
   theme: Theme = "system"; // 主题配置：light/dark/system
   preferencesOpen = false; // 偏好设置弹窗控制
-  debugPanelOpen = false;  // 调试面板显示控制
+  debugPanelOpen = false; // 调试面板显示控制
+  readonly debugPanelAvailable = DEBUG_TOOLS_ENABLED;
   private _systemThemeQuery = window.matchMedia("(prefers-color-scheme: dark)");
 
   constructor() {
@@ -64,6 +66,7 @@ class AppStore {
 
   // 切换调试面板显示状态
   toggleDebugPanel() {
+    if (!this.debugPanelAvailable) return;
     this.debugPanelOpen = !this.debugPanelOpen;
   }
 }

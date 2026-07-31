@@ -1,12 +1,15 @@
 import { observer } from "mobx-react-lite";
-import { useCallback, useState, useEffect } from "react";
 import { Menu } from "lucide-react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import {
   Menubar,
+  MenubarCheckboxItem,
   MenubarContent,
   MenubarItem,
+  MenubarLabel,
   MenubarMenu,
   MenubarSeparator,
+  MenubarShortcut,
   MenubarTrigger,
 } from "@/components/ui/menubar";
 import { getCurrentWindow } from "@tauri-apps/api/window";
@@ -14,161 +17,335 @@ import { appStore } from "@/stores/app.store";
 
 const appWindow = getCurrentWindow();
 
-// 具有 Windows 原生体验且支持平铺自适应折叠的菜单栏组件
+type EditCommand = "undo" | "redo" | "cut" | "copy" | "paste" | "selectAll";
+type TopLevelMenu = "app" | "edit" | "view" | "help" | "more";
+
+interface EditMenuItemsProps {
+  onCommand: (command: EditCommand) => void;
+}
+
+const EditMenuItems = ({ onCommand }: EditMenuItemsProps) => (
+  <>
+    <MenubarItem onSelect={() => onCommand("undo")} aria-keyshortcuts="Control+Z">
+      撤销
+      <MenubarShortcut>Ctrl+Z</MenubarShortcut>
+    </MenubarItem>
+    <MenubarItem onSelect={() => onCommand("redo")} aria-keyshortcuts="Control+Y">
+      重做
+      <MenubarShortcut>Ctrl+Y</MenubarShortcut>
+    </MenubarItem>
+    <MenubarSeparator />
+    <MenubarItem onSelect={() => onCommand("cut")} aria-keyshortcuts="Control+X">
+      剪切
+      <MenubarShortcut>Ctrl+X</MenubarShortcut>
+    </MenubarItem>
+    <MenubarItem onSelect={() => onCommand("copy")} aria-keyshortcuts="Control+C">
+      复制
+      <MenubarShortcut>Ctrl+C</MenubarShortcut>
+    </MenubarItem>
+    <MenubarItem onSelect={() => onCommand("paste")} aria-keyshortcuts="Control+V">
+      粘贴
+      <MenubarShortcut>Ctrl+V</MenubarShortcut>
+    </MenubarItem>
+    <MenubarItem onSelect={() => onCommand("selectAll")} aria-keyshortcuts="Control+A">
+      全选
+      <MenubarShortcut>Ctrl+A</MenubarShortcut>
+    </MenubarItem>
+  </>
+);
+
+interface ViewMenuItemsProps {
+  onReload: () => void;
+  onToggleFullscreen: () => void;
+}
+
+const ViewMenuItems = ({ onReload, onToggleFullscreen }: ViewMenuItemsProps) => (
+  <>
+    <MenubarItem onSelect={onReload} aria-keyshortcuts="Control+R">
+      重新加载
+      <MenubarShortcut>Ctrl+R</MenubarShortcut>
+    </MenubarItem>
+    <MenubarItem onSelect={onToggleFullscreen} aria-keyshortcuts="F11">
+      切换全屏
+      <MenubarShortcut>F11</MenubarShortcut>
+    </MenubarItem>
+    {appStore.debugPanelAvailable && (
+      <>
+        <MenubarSeparator />
+        <MenubarCheckboxItem
+          checked={appStore.debugPanelOpen}
+          onCheckedChange={() => appStore.toggleDebugPanel()}
+        >
+          IPC 调试面板
+        </MenubarCheckboxItem>
+      </>
+    )}
+  </>
+);
+
 export const AppMenu = observer(() => {
   const [windowWidth, setWindowWidth] = useState(window.innerWidth);
+  const [openMenu, setOpenMenu] = useState("");
+  const triggerRefs = useRef<Partial<Record<TopLevelMenu, HTMLButtonElement | null>>>({});
+  const lastEditableElement = useRef<HTMLElement | null>(null);
+
+  const showHelp = windowWidth >= 420;
+  const showView = windowWidth >= 360;
+  const showEdit = windowWidth >= 300;
+  const hasCollapsed = !showHelp || !showView || !showEdit;
 
   const handleExit = useCallback(() => {
-    appWindow.close().catch(() => {});
+    void appWindow.close().catch(() => {});
+  }, []);
+
+  const handleReload = useCallback(() => {
+    window.location.reload();
+  }, []);
+
+  const handleToggleFullscreen = useCallback(() => {
+    void appWindow
+      .isFullscreen()
+      .then((fullscreen) => appWindow.setFullscreen(!fullscreen))
+      .catch(() => {});
+  }, []);
+
+  const handleAbout = useCallback(() => {
+    window.alert(
+      "tauri-python-app\n版本 0.1.0\n\nTauri v2、React、Rust 与 Python sidecar 应用模板",
+    );
+  }, []);
+
+  const handleEditCommand = useCallback((command: EditCommand) => {
+    const target = lastEditableElement.current;
+    if (target?.isConnected) {
+      target.focus({ preventScroll: true });
+    }
+    document.execCommand(command);
+  }, []);
+
+  const focusTopLevelMenu = useCallback((menu: TopLevelMenu, expand: boolean) => {
+    const trigger = triggerRefs.current[menu];
+    if (!trigger) return;
+    trigger.focus({ preventScroll: true });
+    setOpenMenu(expand ? menu : "");
   }, []);
 
   useEffect(() => {
-    const handleResize = () => {
-      setWindowWidth(window.innerWidth);
-    };
+    const handleResize = () => setWindowWidth(window.innerWidth);
     window.addEventListener("resize", handleResize);
     return () => window.removeEventListener("resize", handleResize);
   }, []);
 
   useEffect(() => {
-    const handleKeyDown = (event: KeyboardEvent) => {
+    const rememberEditableElement = (event: FocusEvent) => {
+      const target = event.target;
       if (
-        !event.repeat &&
-        !event.isComposing &&
-        event.ctrlKey &&
-        !event.altKey &&
-        !event.shiftKey &&
-        event.key.toLowerCase() === "q"
+        target instanceof HTMLInputElement ||
+        target instanceof HTMLTextAreaElement ||
+        (target instanceof HTMLElement && target.isContentEditable)
       ) {
+        lastEditableElement.current = target;
+      }
+    };
+
+    document.addEventListener("focusin", rememberEditableElement);
+    return () => document.removeEventListener("focusin", rememberEditableElement);
+  }, []);
+
+  useEffect(() => {
+    const handleKeyDown = (event: KeyboardEvent) => {
+      if (event.repeat || event.isComposing || event.defaultPrevented) return;
+
+      const primaryModifier = event.ctrlKey || event.metaKey;
+      const key = event.key.toLowerCase();
+
+      if (primaryModifier && !event.altKey && !event.shiftKey) {
+        if (key === "q") {
+          event.preventDefault();
+          handleExit();
+          return;
+        }
+        if (key === "," || event.code === "Comma") {
+          event.preventDefault();
+          appStore.openPreferences();
+          return;
+        }
+        if (key === "r") {
+          event.preventDefault();
+          handleReload();
+          return;
+        }
+      }
+
+      if (!primaryModifier && !event.altKey && !event.shiftKey && event.key === "F10") {
         event.preventDefault();
-        handleExit();
+        focusTopLevelMenu("app", false);
+        return;
+      }
+
+      if (!primaryModifier && !event.altKey && !event.shiftKey && event.key === "F11") {
+        event.preventDefault();
+        handleToggleFullscreen();
+        return;
+      }
+
+      if (event.altKey && !primaryModifier && !event.shiftKey) {
+        const menu = {
+          a: "app",
+          e: showEdit ? "edit" : "more",
+          v: showView ? "view" : "more",
+          h: showHelp ? "help" : "more",
+        }[key] as TopLevelMenu | undefined;
+
+        if (menu) {
+          event.preventDefault();
+          focusTopLevelMenu(menu, true);
+        }
       }
     };
 
     window.addEventListener("keydown", handleKeyDown);
     return () => window.removeEventListener("keydown", handleKeyDown);
-  }, [handleExit]);
-
-  // 优化折叠阈值：只有在空间确实非常紧凑时才启动阶梯式折叠
-  const showHelp = windowWidth >= 420; // 窗口小于 420px 时折叠 "帮助"
-  const showView = windowWidth >= 360; // 窗口小于 360px 时折叠 "视图"
-  const showEdit = windowWidth >= 300; // 窗口小于 300px 时折叠 "编辑"
-
-  const hasCollapsed = !showHelp || !showView || !showEdit;
+  }, [
+    focusTopLevelMenu,
+    handleExit,
+    handleReload,
+    handleToggleFullscreen,
+    showEdit,
+    showHelp,
+    showView,
+  ]);
 
   return (
-    <Menubar className="border-none bg-transparent shadow-none h-full rounded-none p-0 space-x-0">
-      {/* ── 1. App 菜单（始终显示） ── */}
-      <MenubarMenu>
-        <MenubarTrigger className="h-full rounded-none px-3 py-0 text-xs cursor-default">App</MenubarTrigger>
+    <Menubar
+      value={openMenu}
+      onValueChange={setOpenMenu}
+      loop
+      aria-label="应用菜单"
+      className="h-full space-x-0 rounded-none border-none bg-transparent p-0 shadow-none"
+    >
+      <MenubarMenu value="app">
+        <MenubarTrigger
+          ref={(node) => {
+            triggerRefs.current.app = node;
+          }}
+          aria-label="App 菜单"
+          aria-keyshortcuts="Alt+A"
+          className="h-full rounded-none px-3 py-0 text-xs"
+        >
+          App
+        </MenubarTrigger>
         <MenubarContent className="mt-[-1px]">
-          <div className="px-2 py-1.5 text-xs font-semibold text-muted-foreground select-none">
-            tauri-python-app
-          </div>
+          <MenubarLabel className="text-muted-foreground">tauri-python-app</MenubarLabel>
           <MenubarSeparator />
-          <MenubarItem onClick={() => appStore.openPreferences()} className="cursor-pointer">
+          <MenubarItem onSelect={() => appStore.openPreferences()} aria-keyshortcuts="Control+,">
             偏好设置
+            <MenubarShortcut>Ctrl+,</MenubarShortcut>
           </MenubarItem>
           <MenubarSeparator />
           <MenubarItem
-            onClick={handleExit}
-            className="text-destructive focus:bg-destructive/10 focus:text-destructive cursor-pointer"
+            onSelect={handleExit}
+            aria-keyshortcuts="Control+Q"
+            className="text-destructive focus:bg-destructive/10 focus:text-destructive"
           >
-            <span>退出</span>
-            <span className="ml-auto pl-8 text-xs text-muted-foreground">Ctrl+Q</span>
+            退出
+            <MenubarShortcut>Ctrl+Q</MenubarShortcut>
           </MenubarItem>
         </MenubarContent>
       </MenubarMenu>
 
-      {/* ── 2. 编辑 ── */}
       {showEdit && (
-        <MenubarMenu>
-          <MenubarTrigger className="h-full rounded-none px-3 py-0 text-xs cursor-default">编辑</MenubarTrigger>
-          <MenubarContent className="mt-[-1px]">
-            <MenubarItem className="cursor-pointer">撤销</MenubarItem>
-            <MenubarItem className="cursor-pointer">重做</MenubarItem>
-            <MenubarSeparator />
-            <MenubarItem className="cursor-pointer">剪切</MenubarItem>
-            <MenubarItem className="cursor-pointer">复制</MenubarItem>
-            <MenubarItem className="cursor-pointer">粘贴</MenubarItem>
-          </MenubarContent>
-        </MenubarMenu>
-      )}
-
-      {/* ── 3. 视图 ── */}
-      {showView && (
-        <MenubarMenu>
-          <MenubarTrigger className="h-full rounded-none px-3 py-0 text-xs cursor-default">视图</MenubarTrigger>
-          <MenubarContent className="mt-[-1px]">
-            <MenubarItem className="cursor-pointer">重新加载</MenubarItem>
-            <MenubarItem className="cursor-pointer">切换全屏</MenubarItem>
-            <MenubarSeparator />
-            <MenubarItem onClick={() => appStore.toggleDebugPanel()} className="cursor-pointer">
-              {appStore.debugPanelOpen ? "隐藏 IPC 调试面板" : "显示 IPC 调试面板"}
-            </MenubarItem>
-          </MenubarContent>
-        </MenubarMenu>
-      )}
-
-      {/* ── 4. 帮助 ── */}
-      {showHelp && (
-        <MenubarMenu>
-          <MenubarTrigger className="h-full rounded-none px-3 py-0 text-xs cursor-default">帮助</MenubarTrigger>
-          <MenubarContent className="mt-[-1px]">
-            <MenubarItem className="cursor-pointer">关于</MenubarItem>
-          </MenubarContent>
-        </MenubarMenu>
-      )}
-
-      {/* ── 5. 汉堡折叠按钮（平铺结构，防止级联菜单溢出窗口） ── */}
-      {hasCollapsed && (
-        <MenubarMenu>
-          {/* 将“更多”文案替换为标准的汉堡三道杠图标 */}
-          <MenubarTrigger className="h-full rounded-none px-3 py-0 cursor-default">
-            <Menu className="h-3.5 w-3.5 text-muted-foreground" />
+        <MenubarMenu value="edit">
+          <MenubarTrigger
+            ref={(node) => {
+              triggerRefs.current.edit = node;
+            }}
+            aria-label="编辑菜单"
+            aria-keyshortcuts="Alt+E"
+            className="h-full rounded-none px-3 py-0 text-xs"
+          >
+            编辑
           </MenubarTrigger>
           <MenubarContent className="mt-[-1px]">
-            
-            {/* 折叠后的“编辑”选项：在单一列表内平铺，不采用二级子菜单 */}
+            <EditMenuItems onCommand={handleEditCommand} />
+          </MenubarContent>
+        </MenubarMenu>
+      )}
+
+      {showView && (
+        <MenubarMenu value="view">
+          <MenubarTrigger
+            ref={(node) => {
+              triggerRefs.current.view = node;
+            }}
+            aria-label="视图菜单"
+            aria-keyshortcuts="Alt+V"
+            className="h-full rounded-none px-3 py-0 text-xs"
+          >
+            视图
+          </MenubarTrigger>
+          <MenubarContent className="mt-[-1px]">
+            <ViewMenuItems onReload={handleReload} onToggleFullscreen={handleToggleFullscreen} />
+          </MenubarContent>
+        </MenubarMenu>
+      )}
+
+      {showHelp && (
+        <MenubarMenu value="help">
+          <MenubarTrigger
+            ref={(node) => {
+              triggerRefs.current.help = node;
+            }}
+            aria-label="帮助菜单"
+            aria-keyshortcuts="Alt+H"
+            className="h-full rounded-none px-3 py-0 text-xs"
+          >
+            帮助
+          </MenubarTrigger>
+          <MenubarContent className="mt-[-1px]">
+            <MenubarItem onSelect={handleAbout}>关于 tauri-python-app</MenubarItem>
+          </MenubarContent>
+        </MenubarMenu>
+      )}
+
+      {hasCollapsed && (
+        <MenubarMenu value="more">
+          <MenubarTrigger
+            ref={(node) => {
+              triggerRefs.current.more = node;
+            }}
+            aria-label="更多菜单"
+            className="h-full rounded-none px-3 py-0"
+          >
+            <Menu className="h-3.5 w-3.5 text-muted-foreground" aria-hidden="true" />
+            <span className="sr-only">更多菜单</span>
+          </MenubarTrigger>
+          <MenubarContent className="mt-[-1px]">
             {!showEdit && (
               <>
-                <div className="px-2 py-1 text-[10px] font-bold text-muted-foreground uppercase tracking-wider select-none">
-                  编辑
-                </div>
-                <MenubarItem className="cursor-pointer">撤销</MenubarItem>
-                <MenubarItem className="cursor-pointer">重做</MenubarItem>
-                <MenubarItem className="cursor-pointer">剪切</MenubarItem>
-                <MenubarItem className="cursor-pointer">复制</MenubarItem>
-                <MenubarItem className="cursor-pointer">粘贴</MenubarItem>
+                <MenubarLabel className="text-muted-foreground">编辑</MenubarLabel>
+                <EditMenuItems onCommand={handleEditCommand} />
               </>
             )}
 
-            {/* 折叠后的“视图”选项 */}
             {!showView && (
               <>
                 {!showEdit && <MenubarSeparator />}
-                <div className="px-2 py-1 text-[10px] font-bold text-muted-foreground uppercase tracking-wider select-none">
-                  视图
-                </div>
-                <MenubarItem className="cursor-pointer">重新加载</MenubarItem>
-                <MenubarItem className="cursor-pointer">切换全屏</MenubarItem>
-                <MenubarItem onClick={() => appStore.toggleDebugPanel()} className="cursor-pointer">
-                  {appStore.debugPanelOpen ? "隐藏 IPC 调试面板" : "显示 IPC 调试面板"}
-                </MenubarItem>
+                <MenubarLabel className="text-muted-foreground">视图</MenubarLabel>
+                <ViewMenuItems
+                  onReload={handleReload}
+                  onToggleFullscreen={handleToggleFullscreen}
+                />
               </>
             )}
 
-            {/* 折叠后的“帮助”选项 */}
             {!showHelp && (
               <>
                 {(!showEdit || !showView) && <MenubarSeparator />}
-                <div className="px-2 py-1 text-[10px] font-bold text-muted-foreground uppercase tracking-wider select-none">
-                  帮助
-                </div>
-                <MenubarItem className="cursor-pointer">关于</MenubarItem>
+                <MenubarLabel className="text-muted-foreground">帮助</MenubarLabel>
+                <MenubarItem onSelect={handleAbout}>关于 tauri-python-app</MenubarItem>
               </>
             )}
-            
           </MenubarContent>
         </MenubarMenu>
       )}

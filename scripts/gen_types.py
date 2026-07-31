@@ -15,6 +15,11 @@ except ImportError:
 ROOT = Path(__file__).resolve().parents[1]
 SCHEMA_PATH = ROOT / "src" / "types" / "schema.json"
 OUTPUT_PATH = ROOT / "src" / "types" / "generated.ts"
+TS_IDENTIFIER = re.compile(r"^[A-Za-z_$][A-Za-z0-9_$]*$")
+
+
+def ts_property(name: str) -> str:
+    return name if TS_IDENTIFIER.fullmatch(name) else json.dumps(name)
 
 
 if __name__ == "__main__":
@@ -22,22 +27,27 @@ if __name__ == "__main__":
 
 sys.path.insert(0, str(ROOT))
 
+from pydantic import BaseModel, TypeAdapter  # noqa: E402
+
+import backend.handlers.echo  # noqa: F401, E402
+import backend.handlers.tasks  # noqa: F401, E402
+from backend.dispatcher import NO_PARAMS  # noqa: E402
 from backend.models import (  # noqa: E402
+    BackendReadyPayload,
     LogPayload,
     RpcError,
     RpcNotification,
     RpcRequest,
     RpcResponse,
-    BackendReadyPayload,
-    TaskCancelResult,
     TaskCancelParams,
+    TaskCancelResult,
     TaskGetParams,
     TaskIdResult,
     TaskProgress,
     TaskRemoveResult,
     TaskSnapshot,
 )
-
+from backend.rpc import rpc  # noqa: E402
 
 MODELS = {
     "RpcError": RpcError,
@@ -56,16 +66,6 @@ MODELS = {
 }
 
 IDENT_RE = re.compile(r"^[A-Za-z_$][A-Za-z0-9_$]*$")
-
-RPC_METHODS = {
-    "echo": ("unknown", "unknown"),
-    "task.list": ("null", "Array<TaskSnapshot>"),
-    "task.get": ("TaskGetParams", "TaskSnapshot | null"),
-    "task.remove": ("TaskGetParams", "TaskRemoveResult"),
-    "task.cancel": ("TaskCancelParams", "TaskCancelResult"),
-    "task.long": ("null", "TaskIdResult"),
-    "task.blocking": ("null", "TaskIdResult"),
-}
 
 
 def ts_prop_name(name: str) -> str:
@@ -148,6 +148,22 @@ def emit_type(name: str, schema: dict[str, Any]) -> str:
     return f"export type {name} = {body};\n"
 
 
+def annotation_to_ts(annotation: Any) -> str:
+    if annotation is NO_PARAMS:
+        return "null"
+    if annotation is Any:
+        return "unknown"
+    if isinstance(annotation, type) and issubclass(annotation, BaseModel):
+        return annotation.__name__
+    return schema_to_ts(TypeAdapter(annotation).json_schema())
+
+
+RPC_METHODS = {
+    spec.name: (annotation_to_ts(spec.params_type), annotation_to_ts(spec.result_type))
+    for spec in rpc.specs
+}
+
+
 def main() -> None:
     schemas = {name: model.model_json_schema() for name, model in MODELS.items()}
     defs = collect_defs(schemas)
@@ -176,16 +192,30 @@ def main() -> None:
     lines.append("export interface RpcMethodMap {")
     for method, (params_type, result_type) in RPC_METHODS.items():
         lines.append(
-            f"  {json.dumps(method)}: {{ params: {params_type}; result: {result_type} }};"
+            f"  {ts_property(method)}: {{ params: {params_type}; result: {result_type} }};"
         )
-    lines.extend([
-        "}",
-        "",
-        "export type RpcMethod = keyof RpcMethodMap;",
-        "export type RpcParams<M extends RpcMethod> = RpcMethodMap[M][\"params\"];",
-        "export type RpcResult<M extends RpcMethod> = RpcMethodMap[M][\"result\"];",
-        "",
-    ])
+    lines.extend(
+        [
+            "}",
+            "",
+            "export type RpcMethod = keyof RpcMethodMap;",
+            'export type RpcParams<M extends RpcMethod> = RpcMethodMap[M]["params"];',
+            'export type RpcResult<M extends RpcMethod> = RpcMethodMap[M]["result"];',
+            "",
+            "export const RPC_METHOD_PERMISSIONS = {",
+        ]
+    )
+    for spec in rpc.specs:
+        lines.append(f"  {ts_property(spec.name)}: {json.dumps(spec.permission)},")
+    lines.extend(
+        [
+            "} as const satisfies Record<",
+            "  RpcMethod,",
+            '  "public" | "debug-only" | "requires-confirmation" | "dangerous"',
+            ">;",
+            "",
+        ]
+    )
 
     OUTPUT_PATH.write_text("\n".join(lines).rstrip() + "\n", encoding="utf-8", newline="\n")
     print(f"Generated {OUTPUT_PATH}")

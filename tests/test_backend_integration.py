@@ -2,13 +2,13 @@ from __future__ import annotations
 
 import io
 import json
+import os
 import subprocess
 import sys
 import time
 import unittest
-from unittest import mock
 from pathlib import Path
-
+from unittest import mock
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -23,6 +23,7 @@ class BackendProcess:
             stderr=subprocess.PIPE,
             text=True,
             encoding="utf-8",
+            env={**os.environ, "TAURI_APP_DEBUG": "1"},
         )
         try:
             if initialize:
@@ -57,9 +58,7 @@ class BackendProcess:
         }
         if params is not None:
             message["params"] = params
-        self.process.stdin.write(
-            json.dumps(message) + "\n"
-        )
+        self.process.stdin.write(json.dumps(message) + "\n")
         self.process.stdin.flush()
         while True:
             message = self.read()
@@ -202,6 +201,7 @@ class TaskRegistryTests(unittest.IsolatedAsyncioTestCase):
 
         snapshot = registry.get_task(task_id)
         self.assertIsNotNone(snapshot)
+        assert snapshot is not None
         self.assertEqual(snapshot["status"], "completed")
         self.assertEqual(snapshot["result"], {"ok": True})
         self.assertTrue(registry.remove(task_id)["removed"])

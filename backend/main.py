@@ -1,10 +1,14 @@
 """Python sidecar entry point and JSON-RPC session lifecycle."""
+# ruff: noqa: E402
+
 from __future__ import annotations
 
 import asyncio
+import io
 import logging
 import os
 import sys
+import time
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -14,9 +18,9 @@ from pydantic import ValidationError
 if __package__ in {None, ""}:
     sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-if hasattr(sys.stdout, "reconfigure"):
+if isinstance(sys.stdout, io.TextIOWrapper):
     sys.stdout.reconfigure(encoding="utf-8", line_buffering=True)
-if hasattr(sys.stderr, "reconfigure"):
+if isinstance(sys.stderr, io.TextIOWrapper):
     sys.stderr.reconfigure(encoding="utf-8", errors="replace", line_buffering=True)
 
 logging.basicConfig(
@@ -27,27 +31,34 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-from backend.dispatcher import RpcInvalidParamsError, RpcMethodNotFoundError, dispatcher
+import backend.handlers.echo  # noqa: F401, E402
+import backend.handlers.tasks  # noqa: F401, E402
+from backend.dispatcher import (
+    RpcInvalidParamsError,
+    RpcInvalidResultError,
+    RpcMethodNotFoundError,
+    RpcPermissionDeniedError,
+    dispatcher,
+)
 from backend.models import ImplementationInfo, InitializeParams, InitializeResult
 from backend.protocol import (
+    InboundMessage,
     send_error,
     send_response,
     start_writer,
     stdin_reader,
     stop_writer,
 )
+from backend.protocol_config import (
+    MAX_CONCURRENT_DISPATCH,
+    MAX_INBOUND_QUEUE,
+    PROTOCOL_VERSION,
+)
 from backend.rpc import rpc
 from backend.task_manager import TaskRegistry
 
-import backend.handlers.echo  # noqa: F401, E402
-import backend.handlers.tasks  # noqa: F401, E402
-
 # protocol.py retained the original stdout. Everything else logs to stderr.
 sys.stdout = sys.stderr
-
-PROTOCOL_VERSION = "1.0"
-MAX_INBOUND_QUEUE = 128
-MAX_CONCURRENT_DISPATCH = 16
 
 
 @dataclass
@@ -103,6 +114,7 @@ async def _dispatch_control(
             ),
             capabilities={
                 "methods": rpc.methods,
+                "method_specs": rpc.capabilities,
                 "tasks": {"query": True, "cancel": True, "remove": True},
             },
         )
@@ -134,7 +146,7 @@ async def _dispatch_control(
     return False
 
 
-async def dispatch(msg: Any) -> None:
+async def dispatch(msg: Any, *, queue_wait_ms: float = 0.0, frame_bytes: int = 0) -> None:
     """Validate and dispatch one JSON-RPC 2.0 message."""
     if not isinstance(msg, dict):
         await send_error(None, -32600, "Invalid Request")
@@ -155,6 +167,11 @@ async def dispatch(msg: Any) -> None:
             await send_error(msg_id, -32600, "Invalid Request")
         return
 
+    correlation_id = None
+    meta = msg.get("meta")
+    if isinstance(meta, dict) and isinstance(meta.get("correlation_id"), str):
+        correlation_id = meta["correlation_id"][:128]
+
     params = msg.get("params")
     if "params" in msg and not isinstance(params, (dict, list)):
         if msg_has_id:
@@ -168,6 +185,14 @@ async def dispatch(msg: Any) -> None:
             await send_error(msg_id, -32002, "Backend session is not initialized")
         return
 
+    started = time.monotonic()
+    logger.debug(
+        "rpc.start method=%s correlation_id=%s queue_wait_ms=%.2f frame_bytes=%d",
+        method,
+        correlation_id or "-",
+        queue_wait_ms,
+        frame_bytes,
+    )
     try:
         result = await dispatcher.call(method, params, registry=registry)
         if msg_has_id:
@@ -178,23 +203,46 @@ async def dispatch(msg: Any) -> None:
     except RpcInvalidParamsError as error:
         if msg_has_id:
             await send_error(msg_id, -32602, str(error))
+    except RpcPermissionDeniedError as error:
+        if msg_has_id:
+            await send_error(msg_id, -32010, str(error))
+    except RpcInvalidResultError:
+        logger.exception("RPC method %s violated its declared result contract", method)
+        if msg_has_id:
+            await send_error(msg_id, -32603, "Internal error: invalid handler result")
     except Exception:
         logger.exception("执行 RPC 方法 %s 时发生内部异常", method)
         if msg_has_id:
             await send_error(msg_id, -32603, "Internal error")
+    finally:
+        logger.debug(
+            "rpc.finish method=%s correlation_id=%s duration_ms=%.2f",
+            method,
+            correlation_id or "-",
+            (time.monotonic() - started) * 1000,
+        )
 
 
 async def main() -> None:
     logger.info("Backend process started; waiting for initialize")
     await start_writer()
-    queue: asyncio.Queue[Any] = asyncio.Queue(maxsize=MAX_INBOUND_QUEUE)
+    queue: asyncio.Queue[InboundMessage] = asyncio.Queue(maxsize=MAX_INBOUND_QUEUE)
     dispatch_slots = asyncio.Semaphore(MAX_CONCURRENT_DISPATCH)
     active_dispatch_tasks: set[asyncio.Task] = set()
     reader_task = asyncio.create_task(stdin_reader(queue), name="stdin-reader")
 
-    async def run_dispatch_with_slot(message: Any) -> None:
+    async def run_dispatch_with_slot(
+        message: Any,
+        *,
+        queue_wait_ms: float,
+        frame_bytes: int,
+    ) -> None:
         try:
-            await dispatch(message)
+            await dispatch(
+                message,
+                queue_wait_ms=queue_wait_ms,
+                frame_bytes=frame_bytes,
+            )
         finally:
             dispatch_slots.release()
 
@@ -215,19 +263,34 @@ async def main() -> None:
     try:
         while not session.exit_requested.is_set():
             try:
-                message = await asyncio.wait_for(queue.get(), timeout=0.25)
+                inbound = await asyncio.wait_for(queue.get(), timeout=0.25)
             except asyncio.TimeoutError:
                 if reader_task.done():
                     break
                 continue
 
+            message = inbound.payload
+            queue_wait_ms = (time.monotonic() - inbound.received_at) * 1000
             method = message.get("method") if isinstance(message, dict) else None
             if method in {"initialize", "initialized", "backend.shutdown", "backend.exit"}:
-                await dispatch(message)
+                await dispatch(
+                    message,
+                    queue_wait_ms=queue_wait_ms,
+                    frame_bytes=inbound.frame_bytes,
+                )
                 continue
 
             await dispatch_slots.acquire()
-            track(asyncio.create_task(run_dispatch_with_slot(message), name="rpc-dispatch"))
+            track(
+                asyncio.create_task(
+                    run_dispatch_with_slot(
+                        message,
+                        queue_wait_ms=queue_wait_ms,
+                        frame_bytes=inbound.frame_bytes,
+                    ),
+                    name="rpc-dispatch",
+                )
+            )
     finally:
         reader_task.cancel()
         for task in active_dispatch_tasks:

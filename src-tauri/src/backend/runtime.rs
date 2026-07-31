@@ -14,10 +14,8 @@ use tokio::sync::{mpsc, watch};
 use super::health::BackendHealth;
 use super::logs::{emit_backend_log, new_log_buffer, BackendLogBuffer, BackendLogPayload};
 use super::process::{venv_python_path, ActiveProcess};
-use super::transport::{
-    handle_stdout_line, NdjsonDecoder, StdinMessage, StdinTx, MAX_LOG_LINE_BYTES,
-    MAX_PROTOCOL_LINE_BYTES,
-};
+use super::transport::{handle_stdout_line, NdjsonDecoder, StdinMessage, StdinTx};
+use crate::protocol_config::{MAX_FRAME_BYTES, MAX_LOG_LINE_BYTES};
 
 /// Supervises the Python process and owns its stdio transport endpoints.
 pub struct BackendRuntime {
@@ -123,6 +121,10 @@ impl BackendRuntime {
             .env("PYTHONPATH", workspace_dir)
             .env("TAURI_APP_DATA_DIR", &app_data_dir)
             .env("TAURI_APP_VERSION", env!("CARGO_PKG_VERSION"))
+            .env(
+                "TAURI_APP_DEBUG",
+                if cfg!(debug_assertions) { "1" } else { "0" },
+            )
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped());
@@ -149,8 +151,13 @@ impl BackendRuntime {
             .take()
             .ok_or_else(|| anyhow::anyhow!("无法获取 Python stderr 管道"))?;
 
+        let pid = child
+            .id()
+            .ok_or_else(|| anyhow::anyhow!("无法获取开发 Backend PID"))?;
+
         self.child = Some(ActiveProcess::Dev {
             child: Box::new(child),
+            pid,
         });
 
         let (sender, mut receiver) = mpsc::channel::<StdinMessage>(64);
@@ -186,7 +193,7 @@ impl BackendRuntime {
         let stdout_on_message = Arc::clone(&on_message);
         tokio::spawn(async move {
             let mut reader = BufReader::new(stdout);
-            let mut decoder = NdjsonDecoder::protocol(MAX_PROTOCOL_LINE_BYTES);
+            let mut decoder = NdjsonDecoder::protocol(MAX_FRAME_BYTES);
             let mut chunk = [0_u8; 8192];
             while let Ok(count) = reader.read(&mut chunk).await {
                 if count == 0 {
@@ -247,6 +254,10 @@ impl BackendRuntime {
             .current_dir(&app_data_dir)
             .env("TAURI_APP_DATA_DIR", &app_data_dir)
             .env("TAURI_APP_VERSION", env!("CARGO_PKG_VERSION"))
+            .env(
+                "TAURI_APP_DEBUG",
+                if cfg!(debug_assertions) { "1" } else { "0" },
+            )
             .spawn()
             .map_err(|error| anyhow::anyhow!("启动 Backend 进程失败: {}", error))?;
 
@@ -301,7 +312,7 @@ impl BackendRuntime {
         let logs = Arc::clone(&self.logs);
         let next_log_seq = Arc::clone(&self.next_log_seq);
         tokio::spawn(async move {
-            let mut stdout_decoder = NdjsonDecoder::protocol(MAX_PROTOCOL_LINE_BYTES);
+            let mut stdout_decoder = NdjsonDecoder::protocol(MAX_FRAME_BYTES);
             let mut stderr_decoder = NdjsonDecoder::logs(MAX_LOG_LINE_BYTES);
             while let Some(event) = events.recv().await {
                 match event {

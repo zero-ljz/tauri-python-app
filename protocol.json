@@ -1,0 +1,11 @@
+{
+  "version": "1.0",
+  "max_frame_bytes": 4194304,
+  "max_log_line_bytes": 65536,
+  "max_inbound_queue": 128,
+  "max_outbound_queue": 64,
+  "max_concurrent_dispatch": 16,
+  "max_task_history": 500,
+  "max_frontend_rpc_entries": 200,
+  "max_frontend_logs": 500
+}

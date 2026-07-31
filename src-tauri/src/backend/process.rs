@@ -10,6 +10,7 @@ pub(super) enum ActiveProcess {
     },
     Dev {
         child: Box<tokio::process::Child>,
+        pid: u32,
     },
 }
 
@@ -23,11 +24,10 @@ impl ActiveProcess {
                     child_slot.take();
                 }
             }
-            ActiveProcess::Dev { mut child } => {
-                child
-                    .kill()
-                    .await
-                    .map_err(|error| anyhow::anyhow!("终止开发 Backend 失败: {}", error))?;
+            ActiveProcess::Dev { mut child, pid } => {
+                force_kill_pid(pid)
+                    .map_err(|error| anyhow::anyhow!("终止开发 Backend 进程树失败: {error}"))?;
+                let _ = child.wait().await;
             }
         }
         Ok(())
@@ -62,15 +62,54 @@ fn force_kill_pid(pid: u32) -> Result<()> {
 
 #[cfg(not(windows))]
 fn force_kill_pid(pid: u32) -> Result<()> {
-    let _ = std::process::Command::new("pkill")
-        .args(["-KILL", "-P", &pid.to_string()])
-        .status();
-    let status = std::process::Command::new("kill")
-        .args(["-KILL", &pid.to_string()])
-        .status()?;
-    if status.success() {
+    use std::collections::HashSet;
+
+    let mut pending = vec![pid];
+    let mut descendants = Vec::new();
+    let mut seen = HashSet::new();
+    while let Some(parent) = pending.pop() {
+        if !seen.insert(parent) {
+            continue;
+        }
+        descendants.push(parent);
+        let output = std::process::Command::new("pgrep")
+            .args(["-P", &parent.to_string()])
+            .output();
+        if let Ok(output) = output {
+            pending.extend(parse_child_pids(&output.stdout));
+        }
+    }
+
+    let mut root_killed = false;
+    for target in descendants.into_iter().rev() {
+        let status = std::process::Command::new("kill")
+            .args(["-KILL", &target.to_string()])
+            .status();
+        if target == pid {
+            root_killed = status.is_ok_and(|status| status.success());
+        }
+    }
+    if root_killed {
         Ok(())
     } else {
         Err(anyhow::anyhow!("kill failed for backend pid {pid}"))
+    }
+}
+
+#[cfg(not(windows))]
+fn parse_child_pids(output: &[u8]) -> Vec<u32> {
+    String::from_utf8_lossy(output)
+        .lines()
+        .filter_map(|line| line.trim().parse().ok())
+        .collect()
+}
+
+#[cfg(all(test, not(windows)))]
+mod tests {
+    use super::parse_child_pids;
+
+    #[test]
+    fn child_pid_output_is_parsed_defensively() {
+        assert_eq!(parse_child_pids(b"12\ninvalid\n34\n"), vec![12, 34]);
     }
 }

@@ -81,6 +81,7 @@ export interface BackendReadyPayload {
   version: string;
   protocol_version: string;
   capabilities?: Array<string>;
+  method_permissions?: Record<string, string>;
 }
 
 export interface LogPayload {
@@ -94,7 +95,7 @@ export interface LogPayload {
 }
 
 export interface RpcMethodMap {
-  "echo": { params: unknown; result: unknown };
+  echo: { params: unknown; result: unknown };
   "task.list": { params: null; result: Array<TaskSnapshot> };
   "task.get": { params: TaskGetParams; result: TaskSnapshot | null };
   "task.remove": { params: TaskGetParams; result: TaskRemoveResult };
@@ -106,3 +107,16 @@ export interface RpcMethodMap {
 export type RpcMethod = keyof RpcMethodMap;
 export type RpcParams<M extends RpcMethod> = RpcMethodMap[M]["params"];
 export type RpcResult<M extends RpcMethod> = RpcMethodMap[M]["result"];
+
+export const RPC_METHOD_PERMISSIONS = {
+  echo: "public",
+  "task.list": "public",
+  "task.get": "public",
+  "task.remove": "public",
+  "task.cancel": "public",
+  "task.long": "debug-only",
+  "task.blocking": "debug-only",
+} as const satisfies Record<
+  RpcMethod,
+  "public" | "debug-only" | "requires-confirmation" | "dangerous"
+>;

@@ -1,0 +1,7 @@
+{
+  "include": ["backend", "scripts", "tests"],
+  "exclude": [".venv", "build", "dist", "src-tauri/target"],
+  "pythonVersion": "3.10",
+  "typeCheckingMode": "standard",
+  "reportMissingTypeStubs": false
+}

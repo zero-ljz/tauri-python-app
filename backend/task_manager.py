@@ -1,15 +1,26 @@
 """Bounded, queryable task registry for async and blocking backend work."""
+
 from __future__ import annotations
 
 import asyncio
 import logging
 import uuid
+from collections.abc import Awaitable, Callable
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
-from typing import Any, Awaitable, Callable, Optional
+from typing import Any
 
-from backend.models import TaskCancelResult, TaskProgress, TaskRemoveResult, TaskSnapshot
+from backend.models import (
+    TaskCancelResult,
+    TaskKind,
+    TaskProgress,
+    TaskRemoveResult,
+    TaskSnapshot,
+    TaskState,
+)
 from backend.protocol import send_notification
+from backend.protocol_config import MAX_TASK_HISTORY
+from backend.redaction import redact_text
 
 logger = logging.getLogger(__name__)
 
@@ -21,21 +32,21 @@ _TERMINAL_STATES = {"completed", "failed", "cancelled"}
 class TaskHandle:
     task_id: str
     method: str
-    kind: str
+    kind: TaskKind
     cancellable: bool
-    asyncio_task: Optional[asyncio.Task] = field(default=None, repr=False)
-    status: str = "queued"
+    asyncio_task: asyncio.Task | None = field(default=None, repr=False)
+    status: TaskState = "queued"
     cancel_requested: bool = False
-    progress: Optional[float] = None
-    message: Optional[str] = None
+    progress: float | None = None
+    message: str | None = None
     result: Any = None
-    error: Optional[str] = None
+    error: str | None = None
 
 
 class TaskRegistry:
     """Owns task state; queries are authoritative and notifications are hints."""
 
-    def __init__(self, max_history: int = 500) -> None:
+    def __init__(self, max_history: int = MAX_TASK_HISTORY) -> None:
         self._tasks: dict[str, TaskHandle] = {}
         self._closed = False
         self._max_history = max_history
@@ -91,7 +102,7 @@ class TaskRegistry:
         except Exception as error:
             logger.exception("任务 %s 抛出异常: %s", task_id, error)
             handle.status = "failed"
-            handle.error = str(error)
+            handle.error = redact_text(str(error), max_length=1000)
         finally:
             await self._notify_updated(handle)
             self._trim_history()
@@ -186,7 +197,7 @@ class TaskRegistry:
         self,
         task_id: str,
         progress: float,
-        message: Optional[str] = None,
+        message: str | None = None,
     ) -> None:
         handle = self._tasks.get(task_id)
         if handle is None or handle.status in _TERMINAL_STATES:

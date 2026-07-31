@@ -1,5 +1,6 @@
 use serde::Serialize;
 use serde_json::Value;
+use std::collections::BTreeMap;
 use std::sync::Mutex;
 use tokio::sync::watch;
 
@@ -21,6 +22,7 @@ pub struct BackendStatusPayload {
     pub ready: bool,
     pub version: Option<String>,
     pub capabilities: Vec<String>,
+    pub method_permissions: BTreeMap<String, String>,
     pub last_error: Option<String>,
 }
 
@@ -30,6 +32,7 @@ struct BackendHealthState {
     generation: u64,
     version: Option<String>,
     capabilities: Vec<String>,
+    method_permissions: BTreeMap<String, String>,
     last_error: Option<String>,
 }
 
@@ -49,6 +52,7 @@ impl BackendHealth {
                 generation: 0,
                 version: None,
                 capabilities: Vec::new(),
+                method_permissions: BTreeMap::new(),
                 last_error: None,
             }),
             ready_tx,
@@ -65,6 +69,7 @@ impl BackendHealth {
         state.phase = BackendPhase::Starting;
         state.version = None;
         state.capabilities.clear();
+        state.method_permissions.clear();
         state.last_error = None;
         let _ = self.ready_tx.send(false);
         state.generation
@@ -113,6 +118,20 @@ impl BackendHealth {
                     .collect()
             })
             .unwrap_or_default();
+        state.method_permissions = payload
+            .get("method_permissions")
+            .and_then(Value::as_object)
+            .map(|permissions| {
+                permissions
+                    .iter()
+                    .filter_map(|(method, permission)| {
+                        permission
+                            .as_str()
+                            .map(|permission| (method.clone(), permission.to_string()))
+                    })
+                    .collect()
+            })
+            .unwrap_or_default();
         let _ = self.ready_tx.send(true);
         true
     }
@@ -138,6 +157,7 @@ impl BackendHealth {
         };
         state.version = None;
         state.capabilities.clear();
+        state.method_permissions.clear();
         state.last_error = reason;
         let _ = self.ready_tx.send(false);
         true
@@ -151,6 +171,7 @@ impl BackendHealth {
         state.phase = BackendPhase::Failed;
         state.version = None;
         state.capabilities.clear();
+        state.method_permissions.clear();
         state.last_error = Some(reason);
         let _ = self.ready_tx.send(false);
     }
@@ -161,6 +182,15 @@ impl BackendHealth {
             state.phase,
             BackendPhase::Starting | BackendPhase::Ready | BackendPhase::Stopping
         )
+    }
+
+    pub fn method_permission(&self, method: &str) -> Option<String> {
+        self.state
+            .lock()
+            .expect("backend health lock poisoned")
+            .method_permissions
+            .get(method)
+            .cloned()
     }
 
     pub(super) fn is_generation_running(&self, generation: u64) -> bool {
@@ -184,6 +214,7 @@ impl BackendHealth {
             ready: matches!(state.phase, BackendPhase::Ready),
             version: state.version.clone(),
             capabilities: state.capabilities.clone(),
+            method_permissions: state.method_permissions.clone(),
             last_error: state.last_error.clone(),
         }
     }
@@ -200,9 +231,14 @@ mod tests {
         assert!(!health.snapshot().ready);
         assert!(health.mark_ready(
             first,
-            &serde_json::json!({"version": "1", "capabilities": ["echo"]}),
+            &serde_json::json!({
+                "version": "1",
+                "capabilities": ["echo"],
+                "method_permissions": {"echo": "public"}
+            }),
         ));
         assert!(health.snapshot().ready);
+        assert_eq!(health.method_permission("echo").as_deref(), Some("public"));
 
         health.mark_stopped(first, None);
         let second = health.begin_start();

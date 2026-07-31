@@ -75,24 +75,26 @@ export const WindowControls = observer(() => {
     <div className="flex items-center h-full">
       {/* 最小化按钮：悬停变为标准灰色，无圆角直角边，填充高度 */}
       <button
+        type="button"
         id="window-minimize"
         onClick={handleMinimize}
         className={cn(
           "flex h-full w-12 items-center justify-center transition-colors cursor-default rounded-none border-none bg-transparent outline-none",
-          "hover:bg-accent text-foreground"
+          "hover:bg-accent text-foreground",
         )}
         title="最小化"
       >
         <span className="w-2.5 h-[1px] bg-current" />
       </button>
-      
+
       {/* 最大化 / 还原按钮：显示标准 Windows 框线或双叠框 */}
       <button
+        type="button"
         id="window-maximize"
         onClick={handleMaximize}
         className={cn(
           "flex h-full w-12 items-center justify-center transition-colors cursor-default rounded-none border-none bg-transparent outline-none",
-          "hover:bg-accent text-foreground"
+          "hover:bg-accent text-foreground",
         )}
         title={isMaximized ? "还原" : "最大化"}
       >
@@ -105,14 +107,15 @@ export const WindowControls = observer(() => {
           <span className="w-2.5 h-2.5 border border-current bg-transparent" />
         )}
       </button>
-      
+
       {/* 关闭按钮：悬停变为 Windows 经典红色背景与白色图标 */}
       <button
+        type="button"
         id="window-close"
         onClick={handleClose}
         className={cn(
           "flex h-full w-12 items-center justify-center transition-colors cursor-default rounded-none border-none bg-transparent outline-none",
-          "hover:bg-[#e81123] hover:text-white text-foreground"
+          "hover:bg-[#e81123] hover:text-white text-foreground",
         )}
         title="关闭"
       >

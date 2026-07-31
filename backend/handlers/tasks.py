@@ -1,53 +1,49 @@
 import asyncio
 import time
+
+from backend.models import (
+    TaskCancelParams,
+    TaskCancelResult,
+    TaskGetParams,
+    TaskIdResult,
+    TaskRemoveResult,
+    TaskSnapshot,
+)
 from backend.rpc import rpc
 from backend.task_manager import TaskRegistry
-from backend.dispatcher import RpcInvalidParamsError
-from backend.models import TaskCancelParams, TaskGetParams
-from pydantic import ValidationError
 
 
-@rpc.register("task.list")
+@rpc.register("task.list", result=list[TaskSnapshot])
 async def handle_task_list(registry: TaskRegistry) -> list[dict]:
     """Return all active tasks."""
     return registry.list_tasks()
 
 
-def _task_id(params: dict) -> str:
-    try:
-        return TaskGetParams.model_validate(params).task_id
-    except ValidationError as error:
-        raise RpcInvalidParamsError("params must contain a non-empty task_id") from error
-
-
-@rpc.register("task.get")
-async def handle_task_get(params: dict, registry: TaskRegistry) -> dict | None:
+@rpc.register("task.get", params=TaskGetParams, result=TaskSnapshot | None)
+async def handle_task_get(params: TaskGetParams, registry: TaskRegistry) -> dict | None:
     """Return the authoritative snapshot for one task."""
-    return registry.get_task(_task_id(params))
+    return registry.get_task(params.task_id)
 
 
-@rpc.register("task.remove")
-async def handle_task_remove(params: dict, registry: TaskRegistry) -> dict:
+@rpc.register("task.remove", params=TaskGetParams, result=TaskRemoveResult)
+async def handle_task_remove(params: TaskGetParams, registry: TaskRegistry) -> dict:
     """Remove one terminal task from retained history."""
-    return registry.remove(_task_id(params))
+    return registry.remove(params.task_id)
 
 
-@rpc.register("task.cancel")
-async def handle_task_cancel(params: dict, registry: TaskRegistry) -> dict:
+@rpc.register("task.cancel", params=TaskCancelParams, result=TaskCancelResult)
+async def handle_task_cancel(params: TaskCancelParams, registry: TaskRegistry) -> dict:
     """Cancel a task by task_id."""
-    try:
-        validated = TaskCancelParams.model_validate(params)
-    except ValidationError as error:
-        raise RpcInvalidParamsError("params must contain a non-empty task_id") from error
-    return await registry.cancel(validated.task_id)
+    return await registry.cancel(params.task_id)
 
 
-@rpc.register("task.long")
+@rpc.register("task.long", result=TaskIdResult, permission="debug-only")
 async def handle_long_task(registry: TaskRegistry) -> dict:
     """
     Example: spawn a long-running async task.
     Returns task_id immediately; progress notifications are pushed asynchronously.
     """
+
     async def _work():
         for i in range(1, 6):
             await asyncio.sleep(1)
@@ -58,12 +54,13 @@ async def handle_long_task(registry: TaskRegistry) -> dict:
     return {"task_id": task_id}
 
 
-@rpc.register("task.blocking")
+@rpc.register("task.blocking", result=TaskIdResult, permission="debug-only")
 async def handle_blocking_task(registry: TaskRegistry) -> dict:
     """
     Example: spawn a blocking worker thread task.
     The task can be observed, but cannot be force-cancelled once running.
     """
+
     def _work():
         time.sleep(5)
         return {"done": True, "kind": "blocking"}

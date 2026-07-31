@@ -1,19 +1,22 @@
 import { makeAutoObservable } from "mobx";
 import type { LogPayload } from "@/types/generated";
+import { redactText, redactValue } from "@/lib/redact";
+import { MAX_FRONTEND_LOGS, MAX_FRONTEND_RPC_ENTRIES } from "@/types/protocol";
 
 // 报文流向类型
 export type RpcDirection = "request" | "response" | "notification" | "error";
 
 // 报文记录接口
 export interface RpcEntry {
-  id: string;          // 唯一消息 ID
-  timestamp: number;   // 时间戳
+  id: string; // 唯一消息 ID
+  timestamp: number; // 时间戳
   direction: RpcDirection;
-  method?: string;     // 请求方法名
-  params?: unknown;    // 负载参数
-  result?: unknown;    // 成功响应内容
-  error?: string;      // 错误原因描述
-  duration?: number;   // 双向通信耗时（毫秒）
+  method?: string; // 请求方法名
+  params?: unknown; // 负载参数
+  result?: unknown; // 成功响应内容
+  error?: string; // 错误原因描述
+  duration?: number; // 双向通信耗时（毫秒）
+  correlationId?: string;
 }
 
 export interface BackendLogEntry {
@@ -33,10 +36,10 @@ const logStreams = new Set(["stderr", "process"]);
 class RpcStore {
   entries: RpcEntry[] = [];
   logs: BackendLogEntry[] = [];
-  maxEntries = 200;    // 循环缓冲区最大长度，防止内存暴涨
-  maxLogs = 500;
+  maxEntries = MAX_FRONTEND_RPC_ENTRIES;
+  maxLogs = MAX_FRONTEND_LOGS;
   private logIds = new Set<string>();
-  private _idCounter = 0;  // 单调递增计数器，保证 entry ID 全局唯一、无碰撞
+  private _idCounter = 0; // 单调递增计数器，保证 entry ID 全局唯一、无碰撞
 
   constructor() {
     makeAutoObservable(this);
@@ -62,18 +65,25 @@ class RpcStore {
    * 追踪一次请求和响应。
    * 返回一个闭包，在响应返回时调用，用于自动计算请求处理耗时。
    */
-  trackRequest(method: string, params?: unknown) {
+  trackRequest(method: string, params?: unknown, correlationId?: string) {
     const startTime = Date.now();
-    this.addEntry({ timestamp: startTime, direction: "request", method, params });
+    this.addEntry({
+      timestamp: startTime,
+      direction: "request",
+      method,
+      params: redactValue(params),
+      correlationId,
+    });
     return (result?: unknown, error?: string) => {
       const endTime = Date.now(); // Fix 6: 单一快照，同时用于 timestamp 和 duration
       this.addEntry({
         timestamp: endTime,
         direction: error ? "error" : "response",
         method,
-        result,
+        result: redactValue(result),
         error,
         duration: endTime - startTime,
+        correlationId,
       });
     };
   }
@@ -84,16 +94,17 @@ class RpcStore {
       timestamp: Date.now(),
       direction: "notification",
       method,
-      params,
+      params: redactValue(params),
     });
   }
 
   addBackendLog(payload: LogPayload) {
     const level = payload.level && logLevels.has(payload.level) ? payload.level : "info";
     const stream = payload.stream && logStreams.has(payload.stream) ? payload.stream : "stderr";
-    const id = payload.seq != null
-      ? `backend-${payload.seq}`
-      : `${Date.now()}-${Math.random().toString(36).slice(2)}`;
+    const id =
+      payload.seq != null
+        ? `backend-${payload.seq}`
+        : `${Date.now()}-${Math.random().toString(36).slice(2)}`;
 
     if (this.logIds.has(id)) {
       return;
@@ -106,8 +117,8 @@ class RpcStore {
       level,
       stream,
       source: payload.source ?? "backend",
-      message: payload.message,
-      context: payload.context,
+      message: redactText(payload.message),
+      context: redactValue(payload.context) as Record<string, unknown> | null | undefined,
     });
 
     if (this.logs.length > this.maxLogs) {

@@ -4,20 +4,23 @@
 - 通过 asyncio.Lock 全局排他锁向 stdout 串行输出 NDJSON。
 - stderr 管道只负责日志记录。
 """
+
 from __future__ import annotations
+
 import asyncio
 import json
-import sys
 import logging
-from typing import Any, Union
+import sys
+import time
+from dataclasses import dataclass
+from typing import Any
 
 from backend.models import RpcError
+from backend.protocol_config import MAX_FRAME_BYTES, MAX_OUTBOUND_QUEUE
+from backend.redaction import safe_preview
 
 logger = logging.getLogger(__name__)
-JsonRpcId = Union[str, int, None]
-MAX_FRAME_BYTES = 4 * 1024 * 1024
-MAX_OUTBOUND_QUEUE = 64
-
+JsonRpcId = str | int | None
 # Keep a private protocol stream. backend.main redirects normal print() calls to
 # stderr after imports so accidental application output cannot corrupt NDJSON.
 _protocol_stdout = sys.stdout.buffer
@@ -30,13 +33,18 @@ class OutboundFrameTooLarge(ValueError):
 WriteItem = tuple[bytes, asyncio.Future[None]]
 
 
+@dataclass(frozen=True)
+class InboundMessage:
+    payload: Any
+    received_at: float
+    frame_bytes: int
+
+
 class ProtocolWriter:
     """Single bounded stdout writer that keeps blocking pipe I/O off the event loop."""
 
     def __init__(self) -> None:
-        self._queue: asyncio.Queue[WriteItem | None] = asyncio.Queue(
-            maxsize=MAX_OUTBOUND_QUEUE
-        )
+        self._queue: asyncio.Queue[WriteItem | None] = asyncio.Queue(maxsize=MAX_OUTBOUND_QUEUE)
         self._task = asyncio.create_task(self._run(), name="protocol-stdout-writer")
         self._failure: str | None = None
 
@@ -106,11 +114,13 @@ async def write_message(obj: dict[str, Any]) -> None:
 async def send_response(id: JsonRpcId, result: Any) -> None:
     """向 Rust 发送成功应答响应报文。"""
     try:
-        await write_message({
-            "jsonrpc": "2.0",
-            "id": id,
-            "result": result,
-        })
+        await write_message(
+            {
+                "jsonrpc": "2.0",
+                "id": id,
+                "result": result,
+            }
+        )
     except OutboundFrameTooLarge:
         await send_error(
             id,
@@ -148,7 +158,7 @@ async def send_notification(method: str, params: Any = None) -> None:
         logger.error("丢弃过大的出站通知 %s: %s", method, error)
 
 
-async def stdin_reader(queue: asyncio.Queue[dict[str, Any]]) -> None:
+async def stdin_reader(queue: asyncio.Queue[InboundMessage]) -> None:
     """
     流式监听并切分 stdin 管道，将解析合规的 JSON 报文推入接收队列。
     若读到管道关闭事件（EOF）则退出。
@@ -190,14 +200,20 @@ async def stdin_reader(queue: asyncio.Queue[dict[str, Any]]) -> None:
             try:
                 msg = json.loads(line)
             except json.JSONDecodeError as e:
-                logger.warning("丢弃非合规 JSON 报文: %s — 原始报文: %s", e, line)
+                logger.warning("丢弃非合规 JSON 报文: %s — 安全预览: %s", e, safe_preview(line))
                 await send_error(None, -32700, "Parse error")
                 continue
 
             # Fix 7：尝试非阻塞入队；队列满时丢弃并返回背压错误，
             # 防止 stdin_reader 协程永久挂起导致管道死锁。
             try:
-                queue.put_nowait(msg)
+                queue.put_nowait(
+                    InboundMessage(
+                        payload=msg,
+                        received_at=time.monotonic(),
+                        frame_bytes=len(line_bytes),
+                    )
+                )
             except asyncio.QueueFull:
                 logger.warning(
                     "入站消息队列已满（capacity=%d），丢弃消息: %.120r",

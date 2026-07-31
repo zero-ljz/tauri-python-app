@@ -9,6 +9,8 @@ import "./stores/app.store";
 import "./stores/rpc.store";
 
 import { backendStore } from "./stores/backend.store";
+import { updateStore } from "./stores/update.store";
+import { ErrorBoundary } from "./components/ErrorBoundary";
 
 let didBootstrap = false;
 
@@ -33,6 +35,9 @@ function Root() {
     setTimeout(() => {
       void backendStore.init();
     }, 0);
+    setTimeout(() => {
+      void updateStore.init();
+    }, 1500);
   }, []);
 
   return <App />;
@@ -40,6 +45,8 @@ function Root() {
 
 ReactDOM.createRoot(document.getElementById("root") as HTMLElement).render(
   <React.StrictMode>
-    <Root />
-  </React.StrictMode>
+    <ErrorBoundary>
+      <Root />
+    </ErrorBoundary>
+  </React.StrictMode>,
 );

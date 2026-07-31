@@ -52,11 +52,17 @@ impl EventBridge {
                     .get("message")
                     .and_then(|v| v.as_str())
                     .unwrap_or("未知 RPC 响应内部错误");
-                debug!("[EventBridge] 收到错误响应: id={}, message={}", id, err_msg);
+                debug!("[EventBridge] 收到错误响应: id={}, code={}", id, code);
                 let failure = RpcFailure::new(code, err_msg).with_data(error.get("data").cloned());
                 self.rpc.resolve_response(&id, Err(failure));
             } else if let Some(result) = msg.get("result") {
-                debug!("[EventBridge] 收到正常响应: id={}, result={:?}", id, result);
+                debug!(
+                    "[EventBridge] 收到正常响应: id={}, result_bytes={}",
+                    id,
+                    serde_json::to_vec(result)
+                        .map(|bytes| bytes.len())
+                        .unwrap_or(0)
+                );
                 self.rpc.resolve_response(&id, Ok(result.clone()));
             } else {
                 warn!("[EventBridge] 响应报文缺少 result/error 字段: {:?}", msg);

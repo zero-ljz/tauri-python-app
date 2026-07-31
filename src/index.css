@@ -78,7 +78,8 @@
   body {
     background-color: var(--color-background);
     color: var(--color-foreground);
-    font-family: "Segoe UI", "Microsoft YaHei", -apple-system, BlinkMacSystemFont, "PingFang SC", sans-serif;
+    font-family:
+      "Segoe UI", "Microsoft YaHei", -apple-system, BlinkMacSystemFont, "PingFang SC", sans-serif;
     -webkit-font-smoothing: subpixel-antialiased;
     -moz-osx-font-smoothing: auto;
     text-rendering: optimizeLegibility;
@@ -116,4 +117,3 @@
 .selectable {
   user-select: text;
 }
-

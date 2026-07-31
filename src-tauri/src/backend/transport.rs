@@ -3,8 +3,7 @@ use serde_json::Value;
 use std::sync::{Arc, Mutex};
 use tokio::sync::{mpsc, oneshot};
 
-pub(super) const MAX_PROTOCOL_LINE_BYTES: usize = 4 * 1024 * 1024;
-pub(super) const MAX_LOG_LINE_BYTES: usize = 64 * 1024;
+use crate::redaction::safe_preview;
 
 /// A queued stdin frame plus an acknowledgement completed by the actual writer.
 pub struct StdinMessage {
@@ -122,12 +121,13 @@ pub(super) fn handle_stdout_line(
     on_message: &Arc<dyn Fn(Value) + Send + Sync>,
     source: &str,
 ) {
-    debug!("[backend stdout ({})] {}", source, line);
+    debug!("[backend stdout ({})] frame_bytes={}", source, line.len());
     match serde_json::from_str::<Value>(line) {
         Ok(message) => (on_message)(message),
         Err(error) => warn!(
-            "[BackendRuntime] JSON 解析失败: {} — 原始数据: {}",
-            error, line
+            "[BackendRuntime] JSON 解析失败: {} — 安全预览: {}",
+            error,
+            safe_preview(line, 240)
         ),
     }
 }

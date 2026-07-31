@@ -1,0 +1,6 @@
+-r backend/requirements.in
+
+pip-audit
+pyinstaller==6.21.0
+ruff
+uv==0.12.0

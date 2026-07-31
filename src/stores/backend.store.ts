@@ -7,14 +7,9 @@ import type {
   TaskProgress,
   TaskSnapshot,
 } from "@/types/generated";
+import { MAX_TASK_HISTORY } from "@/types/protocol";
 
-export type BackendState =
-  | "unknown"
-  | "starting"
-  | "running"
-  | "stopping"
-  | "stopped"
-  | "error";
+export type BackendState = "unknown" | "starting" | "running" | "stopping" | "stopped" | "error";
 
 export interface TrackedTask {
   taskId: string;
@@ -29,11 +24,12 @@ export interface TrackedTask {
   error?: string | null;
 }
 
-class BackendStore {
-  private readonly maxTasks = 500;
+export class BackendStore {
+  private readonly maxTasks = MAX_TASK_HISTORY;
   state: BackendState = "unknown";
   version: string | null = null;
   capabilities: string[] = [];
+  methodPermissions: Record<string, string> = {};
   tasks = new Map<string, TrackedTask>();
   lastError: string | null = null;
   private _offHandlers: Array<() => void> = [];
@@ -50,12 +46,7 @@ class BackendStore {
   }
 
   private async _init() {
-    const trackedEvents = [
-      "backend.ready",
-      "backend.exited",
-      "task.updated",
-      "task.progress",
-    ];
+    const trackedEvents = ["backend.ready", "backend.exited", "task.updated", "task.progress"];
     const rawEvents = ["backend.log"];
     const offHandlers = [
       rpc.on<BackendReadyPayload>("backend.ready", this.handleReady),
@@ -66,10 +57,7 @@ class BackendStore {
     ];
 
     try {
-      await Promise.all([
-        rpc.listen(trackedEvents),
-        rpc.listen(rawEvents, { track: false }),
-      ]);
+      await Promise.all([rpc.listen(trackedEvents), rpc.listen(rawEvents, { track: false })]);
       runInAction(() => {
         this._offHandlers = offHandlers;
         this._listeners = [...trackedEvents, ...rawEvents];
@@ -90,7 +78,7 @@ class BackendStore {
         off();
       }
       await Promise.allSettled(
-        [...trackedEvents, ...rawEvents].map((event) => rpc.unlisten(event))
+        [...trackedEvents, ...rawEvents].map((event) => rpc.unlisten(event)),
       );
     }
 
@@ -109,10 +97,13 @@ class BackendStore {
                   : "stopped";
         this.version = status.version;
         this.capabilities = status.capabilities;
+        this.methodPermissions = status.method_permissions ?? {};
         this.lastError = status.last_error;
       });
       if (status.ready) {
         await this.syncTasks();
+      } else if (status.phase === "failed") {
+        this.scheduleRestart();
       }
     } catch {
       runInAction(() => {
@@ -126,6 +117,7 @@ class BackendStore {
       this.state = "running";
       this.version = payload.version;
       this.capabilities = payload.capabilities ?? [];
+      this.methodPermissions = payload.method_permissions ?? {};
       this.lastError = null;
       this._restartAttempts = 0;
       if (this._restartTimer !== null) {
@@ -141,6 +133,7 @@ class BackendStore {
       this.state = "stopped";
       this.lastError = payload.reason ?? null;
       this.capabilities = [];
+      this.methodPermissions = {};
       this.tasks.clear();
     });
     if (!payload.recoverable && this._restartTimer !== null) {
@@ -241,14 +234,16 @@ class BackendStore {
   }
 
   private setTrackedTask(taskId: string, task: TrackedTask) {
-    // Refresh insertion order on update, then evict the oldest completed/history
-    // entries so a long-running desktop session has bounded memory usage.
+    // Refresh insertion order on update, then evict only terminal history.
+    // Active tasks are authoritative and must never disappear from the UI.
     this.tasks.delete(taskId);
     this.tasks.set(taskId, task);
     while (this.tasks.size > this.maxTasks) {
-      const oldest = this.tasks.keys().next().value as string | undefined;
-      if (oldest === undefined) break;
-      this.tasks.delete(oldest);
+      const evictable = [...this.tasks.entries()].find(([, candidate]) =>
+        ["completed", "failed", "cancelled"].includes(candidate.status),
+      );
+      if (evictable === undefined) break;
+      this.tasks.delete(evictable[0]);
     }
   }
 
