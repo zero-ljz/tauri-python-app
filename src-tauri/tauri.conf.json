@@ -1,8 +1,8 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
-  "productName": "tauri-python-app",
+  "productName": "tauri-python-template",
   "version": "0.1.0",
-  "identifier": "com.example.tauri-python-app",
+  "identifier": "com.example.tauri-python-template",
   "build": {
     "beforeDevCommand": "pnpm dev",
     "devUrl": "http://127.0.0.1:1420",
@@ -13,7 +13,7 @@
     "windows": [
       {
         "label": "main",
-        "title": "tauri-python-app",
+        "title": "tauri-python-template",
         "width": 800,
         "height": 600,
         "visible": false,

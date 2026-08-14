@@ -2,5 +2,5 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 fn main() {
-    tauri_python_app_lib::run()
+    tauri_python_template_lib::run()
 }

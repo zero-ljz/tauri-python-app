@@ -1,5 +1,5 @@
 {
-  "name": "tauri-python-app",
+  "name": "tauri-python-template",
   "private": true,
   "version": "0.1.0",
   "description": "Production-oriented Tauri v2, React, Rust, and Python sidecar template",

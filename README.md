@@ -1,4 +1,4 @@
-# tauri-python-app
+# tauri-python-template
 
 面向生产环境的 Tauri v2 桌面应用模板：React/TypeScript 前端、Rust 桥接层，以及由 PyInstaller 打包的 Python sidecar。
 

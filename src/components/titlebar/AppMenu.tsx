@@ -111,7 +111,7 @@ export const AppMenu = observer(() => {
 
   const handleAbout = useCallback(() => {
     window.alert(
-      "tauri-python-app\n版本 0.1.0\n\nTauri v2、React、Rust 与 Python sidecar 应用模板",
+      "tauri-python-template\n版本 0.1.0\n\nTauri v2、React、Rust 与 Python sidecar 应用模板",
     );
   }, []);
 
@@ -236,7 +236,7 @@ export const AppMenu = observer(() => {
           App
         </MenubarTrigger>
         <MenubarContent className="mt-[-1px]">
-          <MenubarLabel className="text-muted-foreground">tauri-python-app</MenubarLabel>
+          <MenubarLabel className="text-muted-foreground">tauri-python-template</MenubarLabel>
           <MenubarSeparator />
           <MenubarItem onSelect={() => appStore.openPreferences()} aria-keyshortcuts="Control+,">
             偏好设置
@@ -303,7 +303,7 @@ export const AppMenu = observer(() => {
             帮助
           </MenubarTrigger>
           <MenubarContent className="mt-[-1px]">
-            <MenubarItem onSelect={handleAbout}>关于 tauri-python-app</MenubarItem>
+            <MenubarItem onSelect={handleAbout}>关于 tauri-python-template</MenubarItem>
           </MenubarContent>
         </MenubarMenu>
       )}
@@ -343,7 +343,7 @@ export const AppMenu = observer(() => {
               <>
                 {(!showEdit || !showView) && <MenubarSeparator />}
                 <MenubarLabel className="text-muted-foreground">帮助</MenubarLabel>
-                <MenubarItem onSelect={handleAbout}>关于 tauri-python-app</MenubarItem>
+                <MenubarItem onSelect={handleAbout}>关于 tauri-python-template</MenubarItem>
               </>
             )}
           </MenubarContent>

@@ -3654,7 +3654,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "tauri-python-app"
+name = "tauri-python-template"
 version = "0.1.0"
 dependencies = [
  "anyhow",

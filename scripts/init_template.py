@@ -33,7 +33,7 @@ def initialize(args: argparse.Namespace, root: Path = ROOT) -> None:
     package_path = root / "package.json"
     package = json.loads(package_path.read_text(encoding="utf-8"))
     old_name = str(package["name"])
-    if old_name != "tauri-python-app" and not args.force:
+    if old_name != "tauri-python-template" and not args.force:
         raise RuntimeError("This template was already initialized; pass --force to reinitialize it")
 
     product_name = args.product_name or args.name
