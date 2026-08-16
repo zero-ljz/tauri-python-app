@@ -51,13 +51,14 @@ jobs:
           python -m pip install --require-hashes -r requirements-dev.txt
           pnpm install --frozen-lockfile
 
+      - name: Build native Python sidecar
+        run: pnpm build:backend
+
       - name: Run quality gate
         run: pnpm check
 
-      - name: Build and execute native Python sidecar
-        run: |
-          pnpm build:backend
-          python scripts/smoke_sidecar.py
+      - name: Execute native Python sidecar smoke test
+        run: python scripts/smoke_sidecar.py
 
       - name: Verify complete Tauri integration build
         run: pnpm tauri build --debug --no-bundle
